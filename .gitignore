@@ -19,3 +19,15 @@ yarn-error.log*
 *.ntvs*
 *.njsproj
 *.sln
+
+# Gemini context file
+GEMINI.md
+
+# macOS specific
+.DS_Store
+
+# Local screenshots
+*.png
+
+# Qodana specific
+.qodo/
