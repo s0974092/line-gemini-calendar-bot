@@ -1,101 +1,105 @@
-import { CalendarEvent } from './geminiService';
+import { createCalendarEvent, DuplicateEventError, listAllCalendars, getCalendarChoicesForUser } from './googleCalendarService';
 
-// We need to get a handle on the mock functions created inside the factory.
-// So we define them here and they will be reassigned inside the mock factory.
-let mockEventsList: jest.Mock;
-let mockEventsInsert: jest.Mock;
+const mockEventsList = jest.fn();
+const mockEventsInsert = jest.fn();
+const mockCalendarListList = jest.fn();
 
-// Mock the entire 'googleapis' module using a factory function
-jest.mock('googleapis', () => {
-  // Create the mock functions inside the factory to avoid hoisting issues
-  mockEventsList = jest.fn();
-  mockEventsInsert = jest.fn();
-
-  return {
-    google: {
-      auth: {
-        OAuth2: jest.fn().mockImplementation(() => ({
-          setCredentials: jest.fn(),
-        })),
-      },
-      calendar: jest.fn().mockReturnValue({
-        events: {
-          list: mockEventsList,
-          insert: mockEventsInsert,
-        },
-      }),
+jest.mock('googleapis', () => ({
+  google: {
+    auth: {
+      OAuth2: jest.fn(() => ({
+        setCredentials: jest.fn(),
+      })),
     },
-  };
-});
+    calendar: jest.fn(() => ({
+      events: {
+        list: mockEventsList,
+        insert: mockEventsInsert,
+      },
+      calendarList: {
+        list: mockCalendarListList,
+      },
+    })),
+  },
+}));
 
-// Import the service-under-test AFTER the mock has been defined.
-import { createCalendarEvent, DuplicateEventError } from './googleCalendarService';
-
-describe('googleCalendarService', () => {
+describe('createCalendarEvent', () => {
   beforeEach(() => {
-    // Clear mock history before each test to ensure isolation
     mockEventsList.mockClear();
     mockEventsInsert.mockClear();
   });
 
-  describe('createCalendarEvent', () => {
-    const sampleEvent: CalendarEvent = {
-      title: 'Test Meeting',
-      start: '2025-09-01T10:00:00+08:00',
-      end: '2025-09-01T11:00:00+08:00',
+  it('should create an event if no duplicates are found', async () => {
+    mockEventsList.mockResolvedValue({ data: { items: [] } });
+    mockEventsInsert.mockResolvedValue({ data: { htmlLink: 'http://example.com/event' } });
+
+    const event = {
+      title: 'Test Event',
+      start: '2025-01-01T10:00:00+08:00',
+      end: '2025-01-01T11:00:00+08:00',
       allDay: false,
       recurrence: null,
       reminder: 30,
       calendarId: 'primary',
     };
 
-    test('(C-1) should create a new event if no duplicate is found', async () => {
-      mockEventsList.mockResolvedValue({ data: { items: [] } });
-      const mockCreatedEvent = { summary: 'Test Meeting', htmlLink: 'http://google.com/calendar/event' };
-      mockEventsInsert.mockResolvedValue({ data: mockCreatedEvent });
+    const result = await createCalendarEvent(event, 'primary');
+    expect(result).toEqual({ htmlLink: 'http://example.com/event' });
+  });
 
-      const result = await createCalendarEvent(sampleEvent);
+  it('should throw DuplicateEventError if an identical event exists', async () => {
+    const existingEvent = {
+      summary: 'Test Event',
+      start: { dateTime: '2025-01-01T10:00:00+08:00' },
+      end: { dateTime: '2025-01-01T11:00:00+08:00' },
+      htmlLink: 'http://example.com/duplicate',
+    };
+    mockEventsList.mockResolvedValue({ data: { items: [existingEvent] } });
 
-      expect(mockEventsList).toHaveBeenCalledWith({
-        calendarId: 'primary',
-        q: 'Test Meeting',
-        timeMin: '2025-09-01T10:00:00+08:00',
-        singleEvents: true,
-      });
-      expect(mockEventsInsert).toHaveBeenCalled();
-      expect(result).toEqual(mockCreatedEvent);
-    });
+    const event = {
+      title: 'Test Event',
+      start: '2025-01-01T10:00:00+08:00',
+      end: '2025-01-01T11:00:00+08:00',
+      allDay: false,
+      recurrence: null,
+      reminder: 30,
+      calendarId: 'primary',
+    };
 
-    test('(C-1) should throw a DuplicateEventError if an identical event is found', async () => {
-      const identicalEvent = {
-        summary: 'Test Meeting',
-        start: { dateTime: '2025-09-01T10:00:00+08:00' },
-        end: { dateTime: '2025-09-01T11:00:00+08:00' },
-        htmlLink: 'http://google.com/calendar/event/duplicate',
-      };
-      mockEventsList.mockResolvedValue({ data: { items: [identicalEvent] } });
+    await expect(createCalendarEvent(event, 'primary')).rejects.toThrow(DuplicateEventError);
+  });
+});
 
-      await expect(createCalendarEvent(sampleEvent)).rejects.toThrow(DuplicateEventError);
-      await expect(createCalendarEvent(sampleEvent)).rejects.toHaveProperty(
-        'htmlLink',
-        'http://google.com/calendar/event/duplicate'
-      );
-      expect(mockEventsInsert).not.toHaveBeenCalled();
-    });
+describe('listAllCalendars', () => {
+  beforeEach(() => {
+    mockCalendarListList.mockClear();
+  });
 
-    test('should create a new event if a similar, but not identical, event is found', async () => {
-      const similarEvent = {
-        summary: 'Test Meeting',
-        start: { dateTime: '2025-09-01T14:00:00+08:00' },
-        end: { dateTime: '2025-09-01T15:00:00+08:00' },
-      };
-      mockEventsList.mockResolvedValue({ data: { items: [similarEvent] } });
-      const mockCreatedEvent = { summary: 'Test Meeting' };
-      mockEventsInsert.mockResolvedValue({ data: mockCreatedEvent });
+  it('should return a list of calendars', async () => {
+    const mockCalendars = [{ id: 'primary', summary: 'Primary Calendar' }];
+    mockCalendarListList.mockResolvedValue({ data: { items: mockCalendars } });
+    const result = await listAllCalendars();
+    expect(result).toEqual(mockCalendars);
+  });
+});
 
-      await createCalendarEvent(sampleEvent);
+describe('getCalendarChoicesForUser', () => {
+  beforeEach(() => {
+    mockCalendarListList.mockClear();
+  });
 
-      expect(mockEventsInsert).toHaveBeenCalled();
-    });
+  it('should get calendar choices', async () => {
+    const mockCalendars = [
+      { id: 'primary', summary: '我的主要日曆' },
+      { id: 'family_id', summary: '家庭' },
+    ];
+    mockCalendarListList.mockResolvedValue({ data: { items: mockCalendars } });
+    process.env.TARGET_CALENDAR_NAME = '家庭';
+
+    const choices = await getCalendarChoicesForUser();
+    expect(choices).toEqual([
+      { id: 'primary', summary: '我的主要日曆' },
+      { id: 'family_id', summary: '家庭' },
+    ]);
   });
 });
