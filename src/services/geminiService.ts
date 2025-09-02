@@ -1,20 +1,20 @@
 import { GoogleGenerativeAI, Part } from '@google/generative-ai';
 
-// Get the API key from environment variables
+// 從環境變數中獲取 API 金鑰
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
-// --- Type Definition for the Calendar Event ---
+// --- 日曆事件的類型定義 ---
 export interface CalendarEvent {
   title: string;
-  start: string; // ISO 8601 format
-  end: string;   // ISO 8601 format
+  start: string; // ISO 8601 格式
+  end: string;   // ISO 8601 格式
   allDay: boolean;
   recurrence: string | null;
-  reminder: number; // in minutes
+  reminder: number; // 以分鐘為單位
   calendarId: string;
 }
 
-// --- Prompt for Initial Text Event Parsing ---
+// --- 初始文字事件解析的提示 ---
 const getEventPrompt = (currentDate: string) => `
 You are an expert calendar assistant. Your task is to parse a user's natural language request and convert it into a structured JSON object for creating a Google Calendar event. 
 
@@ -50,7 +50,7 @@ You are an expert calendar assistant. Your task is to parse a user's natural lan
   "calendarId": "primary"}
 `;
 
-// --- Prompt for Shift Schedule (班表) Parsing ---
+// --- 班表解析的提示 ---
 const getShiftSchedulePrompt = (currentDate: string, personName: string) => `
 You are an expert assistant for parsing a shift schedule image for an employee named "${personName}".
 
@@ -85,7 +85,7 @@ You are an expert assistant for parsing a shift schedule image for an employee n
 }
 `;
 
-// --- Prompt for Parsing Recurrence End Condition ---
+// --- 解析重複結束條件的提示 ---
 const getRecurrenceEndPrompt = (baseRrule: string, startDate: string, currentDate: string) => `
 You are an expert in iCalendar RRULE format. Your task is to take a user's natural language description of an end condition and append it to an existing RRULE string.
 
@@ -106,7 +106,7 @@ You are an expert in iCalendar RRULE format. Your task is to take a user's natur
 {"updatedRrule": "RRULE:..."}
 `;
 
-// --- Prompt for Translating RRULE to Human-Readable Text ---
+// --- 將 RRULE 翻譯為人類可讀文字的提示 ---
 const getRruleTranslationPrompt = () => `
 You are an expert in the iCalendar RRULE format. Your task is to translate a given RRULE string into a human-readable, easy-to-understand description in Traditional Chinese.
 
@@ -121,7 +121,7 @@ You are an expert in the iCalendar RRULE format. Your task is to translate a giv
 }
 `;
 
-// --- API Call Functions ---
+// --- API 呼叫函式 ---
 
 const callGeminiText = async (prompt: string, text: string) => {
   try {
@@ -169,7 +169,7 @@ const callGeminiVision = async (prompt: string, imageBase64: string, mimeType: s
   }
 }
 
-// --- Exported Service Functions ---
+// --- 匯出的服務函式 ---
 
 export const parseTextToCalendarEvent = async (text: string): Promise<Partial<CalendarEvent> | { error: string }> => {
   try {
@@ -185,8 +185,8 @@ export const parseImageToCalendarEvents = async (imageBase64: string, personName
   try {
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
     const prompt = getShiftSchedulePrompt(today, personName);
-    // TODO: Detect mimeType from buffer before base64 conversion.
-    const mimeType = 'image/jpeg'; // Assuming JPEG for now.
+    // TODO: 在 base64 轉換前從緩衝區檢測 mimeType。
+    const mimeType = 'image/jpeg'; // 目前假設為 JPEG。
     return await callGeminiVision(prompt, imageBase64, mimeType);
   } catch (error) {
     return { error: 'Failed to parse event from image.' };
@@ -206,9 +206,75 @@ export const parseRecurrenceEndCondition = async (text: string, baseRrule: strin
 export const translateRruleToHumanReadable = async (rrule: string): Promise<{ description: string } | { error: string }> => {
   try {
     const prompt = getRruleTranslationPrompt();
-    // For this prompt, the rrule is the "text" we want to process
+    // 對於此提示，rrule 是我們要處理的「文字」
     return await callGeminiText(prompt, rrule);
   } catch (error) {
     return { error: 'Failed to translate RRULE.' };
+  }
+};
+
+// --- 新增：意圖分類函式 ---
+export type Intent = 
+  | { type: 'create_event'; event: Partial<CalendarEvent> }
+  | { type: 'query_event'; timeMin: string; timeMax: string; query: string; }
+  | { type: 'update_event'; query: string; changes: Partial<CalendarEvent> }
+  | { type: 'delete_event'; timeMin: string; timeMax: string; query: string; }
+  | { type: 'create_schedule'; personName: string }
+  | { type: 'incomplete'; originalText: string }
+  | { type: 'unknown'; originalText: string };
+
+const getIntentPrompt = (currentDate: string) => `
+You are an expert in understanding user requests for a calendar bot. Your primary goal is to classify the user's intent and extract relevant information into a structured JSON object.
+
+# Today's Date: ${currentDate}
+
+# Intents:
+1.  **create_event**: User wants to add a new event.
+    - Extracts: A full or partial event object, same as the event creation prompt.
+2.  **query_event**: User wants to find an existing event.
+    - Extracts: A time range (timeMin, timeMax) and a text search keyword (query).
+    - **CRITICAL**: The 'query' should be the most likely title of the event. Strip away conversational filler like "活動", "的活動", "的事", "行程", "幫我找一下".
+    - **CRITICAL**: If the user is asking a general question about what events exist (e.g., "有什麼事", "有什麼活動"), the 'query' field should be an empty string.
+3.  **update_event**: User wants to change an existing event.
+    - Extracts: A query to find the original event and the changes to apply.
+4.  **delete_event**: User wants to remove an event.
+    - Extracts: A time range (timeMin, timeMax) and a text search keyword (query), similar to query_event.
+    - **CRITICAL**: The 'query' should be the most likely title of the event. Strip away conversational filler like "取消", "的活動".
+5.  **create_schedule**: User wants to create a work schedule from a file.
+    - Extracts: The person's name.
+6.  **incomplete**: The request is for creating an event but is missing crucial details.
+7.  **unknown**: The request is not related to any of the above intents.
+
+# JSON Output Structure:
+- For "create_event": { "type": "create_event", "event": { ... } }
+- For "query_event": { "type": "query_event", "timeMin": "YYYY-MM-DDTHH:mm:ss+08:00", "timeMax": "YYYY-MM-DDTHH:mm:ss+08:00", "query": "..." }
+- For "update_event": { "type": "update_event", "query": "...", "changes": { ... } }
+- For "delete_event": { "type": "delete_event", "timeMin": "YYYY-MM-DDTHH:mm:ss+08:00", "timeMax": "YYYY-MM-DDTHH:mm:ss+08:00", "query": "..." }
+- For "create_schedule": { "type": "create_schedule", "personName": "..." }
+- For "incomplete" or "unknown": { "type": "...", "originalText": "..." }
+
+# Example:
+- User: "幫我查一下明天下午的會議" -> { "type": "query_event", "timeMin": "2025-09-03T12:00:00+08:00", "timeMax": "2025-09-03T17:00:00+08:00", "query": "會議" }
+- User: "取消明天下午的會議" -> { "type": "delete_event", "timeMin": "2025-09-03T12:00:00+08:00", "timeMax": "2025-09-03T17:00:00+08:00", "query": "會議" }
+- User: "查詢 9/11 的活動" -> { "type": "query_event", "timeMin": "2025-09-11T00:00:00+08:00", "timeMax": "2025-09-11T23:59:59+08:00", "query": "" }
+- User: "幫我刪除 911 的團隊午餐" -> { "type": "delete_event", "timeMin": "2025-09-11T00:00:00+08:00", "timeMax": "2025-09-11T23:59:59+08:00", "query": "團隊午餐" }
+- User: "明天有什麼事" -> { "type": "query_event", "timeMin": "2025-09-03T00:00:00+08:00", "timeMax": "2025-09-03T23:59:59+08:00", "query": "" }
+- User: "明天下午三點跟客戶開會" -> { "type": "create_event", "event": { "title": "跟客戶開會", "start": "2025-09-03T15:00:00+08:00", ... } }
+`;
+
+export const classifyIntent = async (text: string): Promise<Intent> => {
+  try {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+    const prompt = getIntentPrompt(today);
+    const result = await callGeminiText(prompt, text);
+    // 基本的驗證，確保回傳的物件有 type 屬性
+    if (result && result.type) {
+      return result as Intent;
+    }
+    console.warn('Gemini intent classification result is missing "type" property:', result);
+    return { type: 'unknown', originalText: text };
+  } catch (error) {
+    console.error('Error in classifyIntent:', error);
+    return { type: 'unknown', originalText: text };
   }
 };
