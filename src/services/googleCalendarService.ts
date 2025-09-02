@@ -1,7 +1,7 @@
 import { google, calendar_v3 } from 'googleapis';
 import { CalendarEvent } from './geminiService';
 
-// --- 1. Custom Error for Duplicate Events ---
+// --- 1. 自訂重複事件錯誤 ---
 export class DuplicateEventError extends Error {
   public htmlLink?: string | null;
 
@@ -12,7 +12,7 @@ export class DuplicateEventError extends Error {
   }
 }
 
-// --- 2. Authentication ---
+// --- 2. 身份驗證 ---
 const auth = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET
@@ -23,15 +23,15 @@ auth.setCredentials({
 
 export const calendar = google.calendar({ version: 'v3', auth });
 
-// --- 3. Calendar Listing and Selection Logic ---
+// --- 3. 日曆列表和選擇邏輯 ---
 
 /**
- * Lists all of the user's calendars.
+ * 列出使用者所有的日曆。
  */
 export const listAllCalendars = async (): Promise<calendar_v3.Schema$CalendarListEntry[]> => {
   try {
     const response = await calendar.calendarList.list({
-      showHidden: true, // Ensure we can see all calendars
+      showHidden: true, // 確保我們可以看到所有日曆
     });
 
     if (response.data.items) {
@@ -45,7 +45,7 @@ export const listAllCalendars = async (): Promise<calendar_v3.Schema$CalendarLis
 };
 
 /**
- * Represents a simplified calendar choice for the user.
+ * 表示使用者簡化的日曆選擇。
  */
 export interface CalendarChoice {
   id: string;
@@ -53,12 +53,12 @@ export interface CalendarChoice {
 }
 
 /**
- * Generates a list of calendar choices for the user based on TARGET_CALENDAR_NAME.
- * Always includes the primary calendar, and up to 2 additional matching calendars.
- * @returns An array of CalendarChoice objects.
+ * 根據 TARGET_CALENDAR_NAME 為使用者產生日曆選擇列表。
+ * 始終包含主要日曆，以及最多 2 個額外的匹配日曆。
+ * @returns CalendarChoice 物件的陣列。
  */
 export async function getCalendarChoicesForUser(): Promise<CalendarChoice[]> {
-  const CALENDAR_CHOICE_LIMIT = 3; // Max 3 choices including primary
+  const CALENDAR_CHOICE_LIMIT = 3; // 最多 3 個選擇，包括主要日曆
   const targetNamesString = process.env.TARGET_CALENDAR_NAME;
   const targetNames = targetNamesString ? targetNamesString.split(',').map(name => name.trim()).filter(name => name !== '') : [];
 
@@ -69,28 +69,28 @@ export async function getCalendarChoicesForUser(): Promise<CalendarChoice[]> {
     allUserCalendars = await listAllCalendars();
   } catch (error) {
     console.error('Failed to fetch user calendars, defaulting to primary.', error);
-    // If listing fails, we can only offer primary
-    choices.push({ id: 'primary', summary: '我的主要日曆' }); // Fallback
+    // 如果列出失敗，我們只能提供主要日曆
+    choices.push({ id: 'primary', summary: '我的主要日曆' }); // 備用
     return choices;
   }
 
-  // 1. Add primary calendar first
+  // 1. 首先新增主要日曆
   const primaryCalendar = allUserCalendars.find(cal => cal.primary);
   if (primaryCalendar) {
     choices.push({ id: primaryCalendar.id!, summary: primaryCalendar.summary || '我的主要日曆' });
   } else {
-    // This case should ideally not happen, but as a fallback
+    // 理想情況下不應該發生這種情況，但作為備用
     choices.push({ id: 'primary', summary: '我的主要日曆' });
   }
 
-  // 2. Add other target calendars based on priority and limit
+  // 2. 根據優先級和限制新增其他目標日曆
   for (const targetName of targetNames) {
     if (choices.length >= CALENDAR_CHOICE_LIMIT) {
-      break; // Reached the limit
+      break; // 達到限制
     }
 
     const foundCal = allUserCalendars.find(cal => cal.summary === targetName);
-    if (foundCal && !choices.some(c => c.id === foundCal.id)) { // Avoid duplicates
+    if (foundCal && !choices.some(c => c.id === foundCal.id)) { // 避免重複
       choices.push({ id: foundCal.id!, summary: foundCal.summary! });
     }
   }
@@ -98,19 +98,19 @@ export async function getCalendarChoicesForUser(): Promise<CalendarChoice[]> {
   return choices;
 }
 
-// --- 4. Create Event Function (with duplicate check) ---
+// --- 4. 建立事件函式 (帶重複檢查) ---
 
 /**
- * Creates an event in Google Calendar, checking for duplicates first.
- * @param event The event object parsed from Gemini.
- * @returns A promise that resolves to the created event data.
- * @throws {DuplicateEventError} If an identical event already exists.
+ * 在 Google 日曆中建立事件，首先檢查重複項。
+ * @param event 從 Gemini 解析的事件物件。
+ * @returns 解析為已建立事件資料的 Promise。
+ * @throws {DuplicateEventError} 如果已存在相同事件。
  */
 export const createCalendarEvent = async (event: CalendarEvent, calendarId: string): Promise<calendar_v3.Schema$Event> => {
-  // Step 1: Check for duplicates
+  // 步驟 1: 檢查重複項
   const existingEvents = await calendar.events.list({
     calendarId: calendarId,
-    q: event.title, // Search by title
+    q: event.title, // 按標題搜尋
     timeMin: event.start,
     timeMax: event.end,
     singleEvents: true,
@@ -121,7 +121,7 @@ export const createCalendarEvent = async (event: CalendarEvent, calendarId: stri
       if (item.summary === event.title) {
         let isDuplicate = false;
         if (event.allDay) {
-          // For a single all-day event, we only need to check the start date.
+          // 對於單個全天事件，我們只需要檢查開始日期。
           const eventStartDate = event.start.split('T')[0];
           if (item.start?.date === eventStartDate) {
             isDuplicate = true;
@@ -145,7 +145,7 @@ export const createCalendarEvent = async (event: CalendarEvent, calendarId: stri
     }
   }
 
-  // Step 2: If no duplicates, create the new event
+  // 步驟 2: 如果沒有重複項，則建立新事件
 
   console.log('No duplicates found. Creating new event...');
   const googleEvent: calendar_v3.Schema$Event = {
@@ -179,5 +179,113 @@ export const createCalendarEvent = async (event: CalendarEvent, calendarId: stri
   } catch (error) {
     console.error('Error creating Google Calendar event:', error);
     throw new Error('Failed to create Google Calendar event.');
+  }
+};
+
+// --- 5. 查詢與修改事件函式 ---
+
+/**
+ * 在指定時間範圍內尋找事件。
+ * @param timeMin ISO 格式的開始時間字串。
+ * @param timeMax ISO 格式的結束時間字串。
+ * @param calendarId 要搜尋的日曆 ID。
+ * @returns 在該範圍內的事件陣列。
+ */
+export const findEventsInTimeRange = async (
+  timeMin: string,
+  timeMax: string,
+  calendarId: string
+): Promise<calendar_v3.Schema$Event[]> => {
+  try {
+    const response = await calendar.events.list({
+      calendarId: calendarId,
+      timeMin: timeMin,
+      timeMax: timeMax,
+      singleEvents: true, // 將重複事件展開為單一實例
+      orderBy: 'startTime',
+    });
+    return response.data.items || [];
+  } catch (error) {
+    console.error('Error finding events in time range:', error);
+    throw new Error('Failed to find events in the specified time range.');
+  }
+};
+
+/**
+ * 根據時間範圍和可選的關鍵字搜尋事件。
+ * @param calendarId 要搜尋的日曆 ID。
+ * @param timeMin 搜尋的開始時間範圍。
+ * @param timeMax 搜尋的結束時間範圍。
+ * @param keyword 可選的關鍵字以供篩選。
+ * @returns 解析為找到的事件陣列的 Promise。
+ */
+export const searchEvents = async (
+  calendarId: string,
+  timeMin: string,
+  timeMax: string,
+  keyword?: string
+): Promise<calendar_v3.Schema$Event[]> => {
+  try {
+    const response = await calendar.events.list({
+      calendarId: calendarId,
+      timeMin: timeMin,
+      timeMax: timeMax,
+      q: keyword || undefined, // 如果提供則使用關鍵字，否則為 undefined
+      maxResults: 10,
+      singleEvents: true,
+      orderBy: 'startTime',
+    });
+    return response.data.items || [];
+  } catch (error) {
+    console.error('Error searching for events:', error);
+    throw new Error('Failed to search for events.');
+  }
+};
+
+/**
+ * 更新現有的日曆事件 (使用 patch)。
+ * @param eventId 要更新的事件 ID。
+ * @param calendarId 事件所在的日曆 ID。
+ * @param eventPatch 包含要變更欄位的物件。
+ * @returns 更新後的事件。
+ */
+export const updateEvent = async (
+  eventId: string,
+  calendarId: string,
+  eventPatch: calendar_v3.Schema$Event
+): Promise<calendar_v3.Schema$Event> => {
+  try {
+    const response = await calendar.events.patch({
+      calendarId: calendarId,
+      eventId: eventId,
+      requestBody: eventPatch,
+    });
+    console.log('Google Calendar event updated:', response.data.htmlLink);
+    return response.data;
+  } catch (error) {
+    console.error('Error updating Google Calendar event:', error);
+    throw new Error('Failed to update Google Calendar event.');
+  }
+};
+
+/**
+ * Deletes an event from a calendar.
+ * @param eventId The ID of the event to delete.
+ * @param calendarId The ID of the calendar the event belongs to.
+ * @returns A promise that resolves when the event is deleted.
+ */
+export const deleteEvent = async (
+  eventId: string,
+  calendarId: string
+): Promise<void> => {
+  try {
+    await calendar.events.delete({
+      calendarId: calendarId,
+      eventId: eventId,
+    });
+    console.log(`Event with ID: ${eventId} deleted successfully from calendar: ${calendarId}.`);
+  } catch (error) {
+    console.error('Error deleting Google Calendar event:', error);
+    throw new Error('Failed to delete Google Calendar event.');
   }
 };
