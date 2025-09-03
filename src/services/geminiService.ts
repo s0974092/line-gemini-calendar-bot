@@ -151,49 +151,74 @@ You are an expert calendar assistant. Your task is to parse a user's natural lan
 // --- API 呼叫函式 ---
 
 const callGeminiText = async (prompt: string, text: string) => {
-  try {
-    const model = genAI.getGenerativeModel({
-      model: DEFAULT_MODEL,
-      generationConfig: {
-        temperature: 0,
-        responseMimeType: "application/json",
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 2000;
+  let lastError: any;
+
+  for (let i = 0; i < MAX_RETRIES; i++) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: DEFAULT_MODEL,
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: "application/json",
+        }
+      });
+      const fullPrompt = `${prompt}\n\n# User Input:\n\"${text}\"`;
+      const result = await model.generateContent(fullPrompt);
+      const response = await result.response;
+      const responseText = response.text();
+      console.log('Gemini Raw Text Response:', responseText);
+      return JSON.parse(responseText);
+    } catch (error: any) {
+      lastError = error;
+      if (error && typeof error === 'object' && 'status' in error && error.status === 503 && i < MAX_RETRIES - 1) {
+        console.warn(`Gemini API returned 503, retrying in ${RETRY_DELAY_MS}ms... (Attempt ${i + 1}/${MAX_RETRIES})`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        continue;
       }
-    });
-    const fullPrompt = `${prompt}\n\n# User Input:\n\"${text}\"`;
-    const result = await model.generateContent(fullPrompt);
-    const response = await result.response;
-    const responseText = response.text();
-    console.log('Gemini Raw Text Response:', responseText);
-    return JSON.parse(responseText);
-  } catch (error) {
-    console.error('Error calling Gemini Text API:', error);
-    throw new Error('Failed to call or parse response from Gemini API.');
+      break; // Exit loop for non-retryable errors or last attempt
+    }
   }
+  console.error('Error calling Gemini Text API:', lastError);
+  throw new Error('Failed to call or parse response from Gemini API.');
 };
 
 const callGeminiVision = async (prompt: string, imageBase64: string, mimeType: string) => {
-  try {
-    const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
-    const imagePart: Part = {
-      inlineData: {
-        data: imageBase64,
-        mimeType
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 2000;
+  let lastError: any;
+
+  for (let i = 0; i < MAX_RETRIES; i++) {
+    try {
+      const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+      const imagePart: Part = {
+        inlineData: {
+          data: imageBase64,
+          mimeType
+        }
+      };
+      const textPart: Part = {
+        text: prompt
+      };
+
+      const result = await model.generateContent([textPart, imagePart]);
+      const response = await result.response;
+      const responseText = response.text().replace(/```json|```/g, '').trim();
+      console.log('Gemini Raw Vision Response:', responseText);
+      return JSON.parse(responseText);
+    } catch (error: any) {
+      lastError = error;
+      if (error && typeof error === 'object' && 'status' in error && error.status === 503 && i < MAX_RETRIES - 1) {
+        console.warn(`Gemini Vision API returned 503, retrying in ${RETRY_DELAY_MS}ms... (Attempt ${i + 1}/${MAX_RETRIES})`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        continue;
       }
-    };
-    const textPart: Part = {
-      text: prompt
-    };
-
-    const result = await model.generateContent([textPart, imagePart]);
-    const response = await result.response;
-    const responseText = response.text().replace(/```json|```/g, '').trim();
-    console.log('Gemini Raw Vision Response:', responseText);
-    return JSON.parse(responseText);
-
-  } catch (error) {
-    console.error('Error calling Gemini Vision API:', error);
-    throw new Error('Failed to call or parse response from Gemini Vision API.');
+      break; // Exit loop for non-retryable errors or last attempt
+    }
   }
+  console.error('Error calling Gemini Vision API:', lastError);
+  throw new Error('Failed to call or parse response from Gemini Vision API.');
 }
 
 // --- 匯出的服務函式 ---
