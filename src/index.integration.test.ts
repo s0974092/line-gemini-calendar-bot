@@ -1,6 +1,5 @@
 
 
-
 import { Client, FileEventMessage, MessageEvent, PostbackEvent, TextEventMessage, WebhookEvent } from '@line/bot-sdk';
 import { CalendarEvent, Intent } from './services/geminiService';
 
@@ -18,9 +17,14 @@ jest.mock('@line/bot-sdk', () => ({
   middleware: jest.fn(() => (req: any, res: any, next: () => any) => next()),
 }));
 
+const mockClassifyIntent = jest.fn();
+const mockParseRecurrenceEndCondition = jest.fn();
+const mockParseEventChanges = jest.fn();
+
 jest.mock('./services/geminiService', () => ({
-  classifyIntent: jest.fn(),
-  parseRecurrenceEndCondition: jest.fn(),
+  classifyIntent: mockClassifyIntent,
+  parseRecurrenceEndCondition: mockParseRecurrenceEndCondition,
+  parseEventChanges: mockParseEventChanges,
 }));
 
 const mockCreateCalendarEvent = jest.fn();
@@ -84,7 +88,6 @@ const createMockTextMessage = (text: string): TextEventMessage => ({
 });
 
 describe('index.ts 整合測試 (Redis Mocked)', () => {
-  let classifyIntentMock: jest.Mock;
   let handleEvent: (event: WebhookEvent) => Promise<any>;
   let appModule: any;
 
@@ -96,16 +99,17 @@ describe('index.ts 整合測試 (Redis Mocked)', () => {
     conversationStateStore.clear();
 
     process.env.USER_WHITELIST = WHITELISTED_USER_ID;
+    process.env.LINE_CHANNEL_SECRET = 'test_secret';
+    process.env.LINE_CHANNEL_ACCESS_TOKEN = 'test_token';
     
     appModule = require('./index');
     handleEvent = appModule.handleEvent;
-    classifyIntentMock = require('./services/geminiService').classifyIntent;
 
     jest.spyOn(Date, 'now').mockReturnValue(1000000);
 
     // Default mocks
     mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: '我的主要日曆' }]);
-    classifyIntentMock.mockResolvedValue({ type: 'unknown', originalText: 'mock' });
+    mockClassifyIntent.mockResolvedValue({ type: 'unknown', originalText: 'mock' });
     mockFindEventsInTimeRange.mockResolvedValue([]);
     mockSearchEvents.mockResolvedValue([]);
     mockCalendarEventsGet.mockResolvedValue({ data: { summary: 'Some Event' } });
@@ -456,12 +460,254 @@ describe('handleFileMessage', () => {
 
       expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, { type: 'text', text: `批次匯入完成：\n- 新增成功 1 件\n- 已存在 1 件\n- 失敗 1 件` });
     });
+
+    it('create_after_choice: 應該在選擇日曆後成功建立活動並回覆樣板訊息', async () => {
+      // Arrange
+      const eventData: Partial<CalendarEvent> = {
+        title: '家庭聚餐',
+        start: '2025-09-28T14:00:00+08:00',
+        end: '2025-09-28T16:00:00+08:00',
+        allDay: false,
+      };
+      const state = { step: 'awaiting_calendar_choice', event: eventData, timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+
+      const createdEvent = { htmlLink: 'https://calendar.google.com/event?eid=mock-event-id' };
+      mockCreateCalendarEvent.mockResolvedValue(createdEvent);
+
+      const calendarId = 'family-calendar@group.calendar.google.com';
+      const calendarName = '家庭日曆';
+      mockGetCalendarChoicesForUser.mockResolvedValue([
+        { id: 'primary', summary: '個人' },
+        { id: calendarId, summary: calendarName },
+      ]);
+
+      const mockPostbackEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'replyTokenForCreateAfterChoice',
+        postback: { data: `action=create_after_choice&calendarId=${calendarId}` },
+      }) as PostbackEvent;
+
+      // Act
+      await handleEvent(mockPostbackEvent);
+
+      // Assert
+      // 1. 檢查活動是否以正確的參數建立
+      expect(mockCreateCalendarEvent).toHaveBeenCalledTimes(1);
+      expect(mockCreateCalendarEvent).toHaveBeenCalledWith(eventData, calendarId);
+
+      // 2. 檢查是否清除了對話狀態
+      expect(conversationStateStore.has(WHITELISTED_USER_ID)).toBe(false);
+
+      // 3. 檢查是否用正確的樣板訊息回覆
+      expect(mockReplyMessage).toHaveBeenCalledTimes(1);
+      const replyArgs = mockReplyMessage.mock.calls[0];
+      expect(replyArgs[0]).toBe('replyTokenForCreateAfterChoice');
+      
+      const templateMessage = replyArgs[1];
+      expect(templateMessage.type).toBe('template');
+      expect(templateMessage.altText).toBe(`活動「${eventData.title}」已新增`);
+      
+      const template = templateMessage.template;
+      expect(template.title).toContain(eventData.title);
+      expect(template.text).toContain('時間：');
+      expect(template.text).toContain(`已新增至「${calendarName}」日曆`);
+      
+      const action = template.actions[0];
+      expect(action.type).toBe('uri');
+      expect(action.label).toBe('在 Google 日曆中查看');
+      expect(action.uri).toBe(createdEvent.htmlLink);
+
+      // 4. 確保沒有多餘的 pushMessage
+      expect(mockPushMessage).not.toHaveBeenCalled();
+    });
   });
 
-  
+  describe('handleTextMessage for updates', () => {
+    let parseEventChangesMock: jest.Mock;
 
+    beforeEach(() => {
+      // 在每個測試前取得 mock 函式的參考
+      parseEventChangesMock = require('./services/geminiService').parseEventChanges;
+    });
 
+    it('handleNewCommand: update_event - 應該直接更新活動並用 replyMessage 回覆', async () => {
+      // Arrange
+      const intent: Intent = {
+        type: 'update_event',
+        query: '下午的會議',
+        timeMin: '2025-01-01T12:00:00+08:00',
+        timeMax: '2025-01-01T18:00:00+08:00',
+        changes: { title: '更新後的團隊會議' },
+      };
+      mockClassifyIntent.mockResolvedValue(intent);
 
+      const eventToUpdate = {
+        id: 'event-to-update-123',
+        summary: '團隊會議',
+        organizer: { email: 'primary' },
+      };
+      mockSearchEvents.mockResolvedValue({ events: [eventToUpdate], nextPageToken: null });
 
+      const updatedEvent = {
+        summary: '更新後的團隊會議',
+        htmlLink: 'https://calendar.google.com/event?eid=updated-event-id',
+      };
+      mockUpdateEvent.mockResolvedValue(updatedEvent);
+
+      const mockMessageEvent = createMockEvent({
+        type: 'message',
+        replyToken: 'replyTokenForUpdate',
+        message: createMockTextMessage('把下午的會議標題改為 更新後的團隊會議'),
+      }) as MessageEvent;
+
+      // Act
+      await handleEvent(mockMessageEvent);
+
+      // Assert
+      expect(mockSearchEvents).toHaveBeenCalled();
+      expect(mockUpdateEvent).toHaveBeenCalledWith(
+        eventToUpdate.id,
+        eventToUpdate.organizer.email,
+        { summary: intent.changes.title }
+      );
+      
+      expect(mockReplyMessage).toHaveBeenCalledTimes(1);
+      const replyArgs = mockReplyMessage.mock.calls[0];
+      expect(replyArgs[0]).toBe('replyTokenForUpdate');
+      const templateMessage = replyArgs[1];
+      expect(templateMessage.type).toBe('template');
+      expect(templateMessage.altText).toBe('活動已更新');
+      expect(templateMessage.template.text).toContain(updatedEvent.summary);
+      expect(mockPushMessage).not.toHaveBeenCalled();
+    });
+
+    it('handleEventUpdate - 應該在收到修改指令後更新活動並用 replyMessage 回覆', async () => {
+      // Arrange
+      const eventId = 'event-to-modify-456';
+      const calendarId = 'primary';
+      const state = { step: 'awaiting_modification_details', eventId, calendarId, timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+
+      const changes = { title: '修改後的標題' };
+      parseEventChangesMock.mockResolvedValue(changes);
+
+      const updatedEvent = { 
+        summary: changes.title, 
+        htmlLink: 'https://calendar.google.com/event?eid=modified-event-id' 
+      };
+      mockUpdateEvent.mockResolvedValue(updatedEvent);
+
+      const mockMessageEvent = createMockEvent({
+        type: 'message',
+        replyToken: 'replyTokenForModification',
+        message: createMockTextMessage('標題改成 修改後的標題'),
+      }) as MessageEvent;
+
+      // Act
+      await handleEvent(mockMessageEvent);
+
+      // Assert
+      expect(mockUpdateEvent).toHaveBeenCalledWith(eventId, calendarId, { summary: changes.title });
+      expect(conversationStateStore.has(WHITELISTED_USER_ID)).toBe(false);
+      
+      expect(mockReplyMessage).toHaveBeenCalledTimes(1);
+      const replyArgs = mockReplyMessage.mock.calls[0];
+      expect(replyArgs[0]).toBe('replyTokenForModification');
+      const templateMessage = replyArgs[1];
+      expect(templateMessage.type).toBe('template');
+      expect(templateMessage.altText).toBe('活動已更新');
+      expect(templateMessage.template.text).toContain(changes.title);
+      expect(mockPushMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleNewCommand edge cases', () => {
+    it('update_event: should ask for clarification if multiple events are found', async () => {
+        mockClassifyIntent.mockResolvedValue({ type: 'update_event', query: '會議' });
+        mockSearchEvents.mockResolvedValue({ events: [{}, {}], nextPageToken: null });
+
+        const mockMessageEvent = createMockEvent({
+            type: 'message',
+            replyToken: 'replyTokenForUpdateMultiple',
+            message: createMockTextMessage('更新會議'),
+        }) as MessageEvent;
+
+        await handleEvent(mockMessageEvent);
+
+        expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForUpdateMultiple', {
+            type: 'text',
+            text: '我找到了多個符合條件的活動，請您先用「查詢」功能找到想修改的活動，然後再點擊該活動下方的「修改」按鈕。',
+        });
+    });
+
+    it('delete_event: should ask for clarification if multiple events are found', async () => {
+        mockClassifyIntent.mockResolvedValue({ type: 'delete_event', query: '會議' });
+        mockSearchEvents.mockResolvedValue({ events: [{}, {}], nextPageToken: null });
+
+        const mockMessageEvent = createMockEvent({
+            type: 'message',
+            replyToken: 'replyTokenForDeleteMultiple',
+            message: createMockTextMessage('刪除會議'),
+        }) as MessageEvent;
+
+        await handleEvent(mockMessageEvent);
+
+        expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForDeleteMultiple', {
+            type: 'text',
+            text: '我找到了多個符合條件的活動，請您先用「查詢」功能找到想刪除的活動，然後再點擊該活動下方的「刪除」按鈕。',
+        });
+    });
+  });
+
+  describe('handleRecurrenceResponse error handling', () => {
+    let handleRecurrenceResponse: any;
+    let parseRecurrenceEndConditionMock: jest.Mock;
+
+    beforeEach(() => {
+        handleRecurrenceResponse = require('./index').handleRecurrenceResponse;
+        parseRecurrenceEndConditionMock = require('./services/geminiService').parseRecurrenceEndCondition;
+    });
+
+    it('should ask again if end condition is unparsable', async () => {
+        const state = { step: 'awaiting_recurrence_end_condition', event: { recurrence: 'RRULE:FREQ=DAILY', start: '2025-01-01' }, timestamp: Date.now() };
+        parseRecurrenceEndConditionMock.mockResolvedValue({ error: 'unparsable' });
+
+        await handleRecurrenceResponse('reply', { type: 'text', text: '亂說' } as TextEventMessage, 'user', state);
+
+        expect(mockReplyMessage).toHaveBeenCalledWith('reply', {
+            type: 'text',
+            text: expect.stringContaining('抱歉，我不太理解您的意思。'),
+        });
+    });
+
+    it('should handle create error during recurrence response', async () => {
+        const state = { step: 'awaiting_recurrence_end_condition', event: { title: 'test', recurrence: 'RRULE:FREQ=DAILY', start: '2025-01-01' }, timestamp: Date.now() };
+        parseRecurrenceEndConditionMock.mockResolvedValue({ updatedRrule: 'RRULE:FREQ=DAILY;COUNT=2' });
+        mockCreateCalendarEvent.mockRejectedValue(new Error('Create failed'));
+
+        await handleRecurrenceResponse('reply', { type: 'text', text: '兩次' } as TextEventMessage, 'user', state);
+        
+        expect(mockPushMessage).toHaveBeenCalledWith('user', {
+            type: 'text',
+            text: '抱歉，新增日曆事件時發生錯誤。',
+        });
+    });
+  });
+
+  describe('handleEventUpdate error handling', () => {
+    let handleEventUpdate: any;
+    beforeEach(() => {
+        handleEventUpdate = require('./index').handleEventUpdate;
+    });
+    it('should reply with timeout message if state is missing eventId', async () => {
+        const state = { step: 'awaiting_modification_details', timestamp: Date.now() }; // Missing eventId/calendarId
+        await handleEventUpdate('reply', { type: 'text', text: 'some change' } as TextEventMessage, 'user', state);
+        expect(mockReplyMessage).toHaveBeenCalledWith('reply', {
+            type: 'text',
+            text: '抱歉，請求已逾時，找不到要修改的活動。',
+        });
+    });
+  });
 
 });

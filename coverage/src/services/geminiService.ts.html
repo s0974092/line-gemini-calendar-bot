@@ -23,9 +23,9 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">92.94% </span>
+                <span class="strong">100% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>79/85</span>
+                <span class='fraction'>85/85</span>
             </div>
         
             
@@ -37,16 +37,16 @@
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">85.71% </span>
+                <span class="strong">100% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>12/14</span>
+                <span class='fraction'>14/14</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">93.15% </span>
+                <span class="strong">100% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>68/73</span>
+                <span class='fraction'>73/73</span>
             </div>
         
             
@@ -511,7 +511,7 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -539,23 +539,23 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">9x</span>
-<span class="cline-any cline-yes">9x</span>
+<span class="cline-any cline-yes">11x</span>
+<span class="cline-any cline-yes">11x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">9x</span>
-<span class="cline-any cline-yes">9x</span>
+<span class="cline-any cline-yes">11x</span>
+<span class="cline-any cline-yes">11x</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">5x</span>
 <span class="cline-any cline-yes">5x</span>
-<span class="cline-any cline-yes">5x</span>
-<span class="cline-any cline-yes">5x</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">4x</span>
-<span class="cline-any cline-yes">4x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -629,12 +629,12 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -834,7 +834,7 @@ You are an expert in the iCalendar RRULE format. Your task is to translate a giv
 `;
 &nbsp;
 // --- 新增：解析事件更新的提示 ---
-const getUpdateChangesPrompt = <span class="fstat-no" title="function not covered" >(c</span>urrentDate: string) =&gt; <span class="cstat-no" title="statement not covered" >`</span>
+const getUpdateChangesPrompt = (currentDate: string) =&gt; `
 You are an expert calendar assistant. Your task is to parse a user's natural language description of a change to an event and convert it into a structured JSON object.
 &nbsp;
 # Rules:
@@ -951,13 +951,13 @@ export const translateRruleToHumanReadable = async (rrule: string): Promise&lt;{
   }
 };
 &nbsp;
-export const parseEventChanges = <span class="fstat-no" title="function not covered" >async </span>(text: string): Promise&lt;Partial&lt;CalendarEvent&gt; | { error: string }&gt; =&gt; {
-<span class="cstat-no" title="statement not covered" >  try {</span>
-    const today = <span class="cstat-no" title="statement not covered" >new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });</span>
-    const prompt = <span class="cstat-no" title="statement not covered" >getUpdateChangesPrompt(today);</span>
-<span class="cstat-no" title="statement not covered" >    return await callGeminiText(prompt, text);</span>
+export const parseEventChanges = async (text: string): Promise&lt;Partial&lt;CalendarEvent&gt; | { error: string }&gt; =&gt; {
+  try {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+    const prompt = getUpdateChangesPrompt(today);
+    return await callGeminiText(prompt, text);
   } catch (error) {
-<span class="cstat-no" title="statement not covered" >    return { error: 'Failed to parse event changes from text.' };</span>
+    return { error: 'Failed to parse event changes from text.' };
   }
 };
 &nbsp;
@@ -1039,7 +1039,7 @@ export const classifyIntent = async (text: string): Promise&lt;Intent&gt; =&gt; 
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-09-03T09:11:25.186Z
+                at 2025-09-03T11:41:56.416Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

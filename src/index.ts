@@ -366,9 +366,9 @@ export const parseCsvToEvents = (csvContent: string, personName: string): Calend
         
         const startHourInt = parseInt(startHour, 10);
         if (startHourInt < 12) {
-          eventTitle = `${personName} 早七`;
+          eventTitle = `${personName} 早班`;
         } else {
-          eventTitle = `${personName} 晚七`;
+          eventTitle = `${personName} 晚班`;
         }
         break;
     }
@@ -457,7 +457,10 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
         searchEvents(calId, intent.timeMin, intent.timeMax, intent.query)
       );
       const searchResults = await Promise.all(searchPromises);
-      const foundEvents = searchResults.flat();
+      
+      const foundEvents = searchResults.flatMap(result => result.events);
+      const hasMore = searchResults.some(result => !!result.nextPageToken);
+
       // Sort events by start time
       foundEvents.sort((a, b) => {
         const timeA = new Date(a.start?.dateTime || a.start?.date || 0).getTime();
@@ -465,7 +468,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
         return timeA - timeB;
       });
 
-      return handleQueryResults(replyToken, intent.query, foundEvents);
+      return handleQueryResults(replyToken, intent.query, foundEvents, hasMore);
 
     case 'update_event':
       console.log(`Handling update_event with query: "${intent.query}" from ${intent.timeMin} to ${intent.timeMax}`);
@@ -477,7 +480,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
       const updateSearchPromises = allCalendarIdsUpdate.map(calId => 
         searchEvents(calId, intent.timeMin, intent.timeMax, intent.query)
       );
-      const eventsToUpdate = (await Promise.all(updateSearchPromises)).flat();
+      const eventsToUpdate = (await Promise.all(updateSearchPromises)).flatMap(r => r.events);
 
       // 2. Handle different scenarios
       if (eventsToUpdate.length === 0) {
@@ -509,8 +512,6 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
         
         const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
 
-        await lineClient.replyMessage(replyToken, { type: 'text', text: '好的，正在為您更新活動...' });
-
         const confirmationMessage: TemplateMessage = {
           type: 'template',
           altText: '活動已更新',
@@ -525,7 +526,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
             }]
           }
         };
-        return lineClient.pushMessage(userId, confirmationMessage);
+        return lineClient.replyMessage(replyToken, confirmationMessage);
 
       } catch (error) {
         console.error('Error updating event directly:', error);
@@ -540,7 +541,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
       const deleteSearchPromises = allCalendarIdsDelete.map(calId => 
         searchEvents(calId, intent.timeMin, intent.timeMax, intent.query)
       );
-      const eventsToDelete = (await Promise.all(deleteSearchPromises)).flat();
+      const eventsToDelete = (await Promise.all(deleteSearchPromises)).flatMap(r => r.events);
 
       if (eventsToDelete.length === 0) {
         return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，找不到您想刪除的活動。' });
@@ -602,7 +603,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
 };
 
 // --- New helper function to handle query results ---
-const handleQueryResults = async (replyToken: string, query: string, events: calendar_v3.Schema$Event[]) => {
+const handleQueryResults = async (replyToken: string, query: string, events: calendar_v3.Schema$Event[], hasMore: boolean) => {
   if (!events || events.length === 0) {
     const replyText = query
       ? `抱歉，找不到與「${query}」相關的未來活動。`
@@ -656,9 +657,14 @@ const handleQueryResults = async (replyToken: string, query: string, events: cal
     },
   };
 
-  const replyText = query
+  let replyText = query
     ? `為您找到 ${events.length} 個與「${query}」相關的活動：`
     : `為您找到 ${events.length} 個活動：`;
+
+  if (hasMore) {
+    replyText += '\n\n還有更多結果。如果沒找到您要的活動，請提供更精確的日期或關鍵字。'
+  }
+
   return lineClient.replyMessage(replyToken, [
     { type: 'text', text: replyText },
     carouselTemplate
@@ -830,10 +836,30 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
 
     // 沒有衝突，直接建立
     try {
-      await lineClient.replyMessage(replyToken, { type: 'text', text: `收到！正在為您新增活動至 Google 日曆中...` });
       const createdEvent = await createCalendarEvent(event, calendarId);
       await clearConversationState(userId);
-      return sendCreationConfirmation(userId, event, createdEvent);
+
+      // 修正：在此處直接使用 replyToken 回覆最終的確認訊息
+      const timeInfo = formatEventTime(event);
+      const allCalendars = await getCalendarChoicesForUser();
+      const calendarName = allCalendars.find(c => c.id === calendarId)?.summary || calendarId;
+
+      const confirmationTemplate: TemplateMessage = {
+        type: 'template',
+        altText: `活動「${event.title}」已新增`,
+        template: {
+          type: 'buttons',
+          title: `✅ ${event.title.substring(0, 40)}`,
+          text: `時間：${timeInfo}\n已新增至「${calendarName}」日曆`.substring(0, 160),
+          actions: [{
+            type: 'uri',
+            label: '在 Google 日曆中查看',
+            uri: createdEvent.htmlLink!
+          }]
+        }
+      };
+      return lineClient.replyMessage(replyToken, confirmationTemplate);
+
     } catch (error) {
       await clearConversationState(userId);
       return handleCreateError(error, userId);
@@ -1036,8 +1062,6 @@ const handleEventUpdate = async (replyToken: string, message: TextEventMessage, 
     
     const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
 
-    await lineClient.replyMessage(replyToken, { type: 'text', text: '好的，正在為您更新活動...' });
-
     const confirmationMessage: TemplateMessage = {
       type: 'template',
       altText: '活動已更新',
@@ -1052,11 +1076,11 @@ const handleEventUpdate = async (replyToken: string, message: TextEventMessage, 
         }]
       }
     };
-    return lineClient.pushMessage(userId, confirmationMessage);
+    return lineClient.replyMessage(replyToken, confirmationMessage);
 
   } catch (error) {
     console.error('Error updating event:', error);
-    return lineClient.pushMessage(userId, { type: 'text', text: '抱歉，更新活動時發生錯誤。' });
+    return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，更新活動時發生錯誤。' });
   }
 };
 

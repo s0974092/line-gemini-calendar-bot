@@ -359,10 +359,11 @@ describe('index.ts unit tests', () => {
         end: '2025-10-27T16:00:00+08:00',
       };
       mockParseEventChanges.mockResolvedValue(changes);
-      mockUpdateEvent.mockResolvedValue({
+      const updatedEvent = {
         summary: '新的標題',
         htmlLink: 'http://example.com/updated',
-      });
+      };
+      mockUpdateEvent.mockResolvedValue(updatedEvent);
   
       const message = { type: 'text', text: '標題改成新的標題，時間改到今天下午三點到四點' } as any;
       await handleTextMessage(replyToken, message, userId);
@@ -373,16 +374,20 @@ describe('index.ts unit tests', () => {
         start: { dateTime: changes.start, timeZone: 'Asia/Taipei' },
         end: { dateTime: changes.end, timeZone: 'Asia/Taipei' },
       });
-      expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.objectContaining({
+      
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.objectContaining({
         type: 'template',
+        altText: '活動已更新',
         template: expect.objectContaining({
           title: '✅ 活動已更新',
-          text: '「新的標題」已更新。',
+          text: `「${updatedEvent.summary}」已更新。`,
+          actions: [expect.objectContaining({ uri: updatedEvent.htmlLink })],
         }),
       }));
+      expect(mockPushMessage).not.toHaveBeenCalled();
     });
   
-    it('should handle update failure', async () => {
+    it('should handle update failure and reply with an error message', async () => {
       const state = {
         step: 'awaiting_modification_details',
         eventId: 'event1',
@@ -396,10 +401,11 @@ describe('index.ts unit tests', () => {
       const message = { type: 'text', text: '改標題' } as any;
       await handleTextMessage(replyToken, message, userId);
   
-      expect(mockPushMessage).toHaveBeenCalledWith(userId, {
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, {
         type: 'text',
         text: '抱歉，更新活動時發生錯誤。',
       });
+      expect(mockPushMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -433,12 +439,12 @@ CJ,,1430-22,,0900-1630,0900-1630,1430-22,1430-22,,0900-1630,,0900-1630,0900-1630
         const personName = 'CJ';
         const events = parseCsvToEvents(baseCsvContent, personName);
         expect(events).toContainEqual(expect.objectContaining({
-            title: 'CJ 晚七',
+            title: 'CJ 晚班',
             start: `${mockCurrentYear}-08-31T14:30:00+08:00`,
             end: `${mockCurrentYear}-08-31T22:00:00+08:00`,
         }));
         expect(events).toContainEqual(expect.objectContaining({
-            title: 'CJ 早七',
+            title: 'CJ 早班',
             start: `${mockCurrentYear}-09-02T09:00:00+08:00`,
             end: `${mockCurrentYear}-09-02T16:30:00+08:00`,
         }));

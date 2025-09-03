@@ -4,6 +4,7 @@ import {
   parseTextToCalendarEvent,
   parseRecurrenceEndCondition,
   translateRruleToHumanReadable,
+  parseEventChanges,
 } from './geminiService';
 
 const mockGeminiApi = {
@@ -108,6 +109,21 @@ describe('geminiService', () => {
         mockGeminiApi.generateContent.mockRejectedValue(new Error('API Error'));
         const result = await translateRruleToHumanReadable('any');
         expect(result).toEqual({ error: 'Failed to translate RRULE.' });
+    });
+  });
+
+  describe('parseEventChanges', () => {
+    it('should parse event changes from text', async () => {
+      const mockResponse = { title: 'New Title' };
+      mockGeminiApi.generateContent.mockResolvedValue({ response: { text: () => JSON.stringify(mockResponse) } });
+      const result = await parseEventChanges('change title to New Title');
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should handle API errors gracefully', async () => {
+      mockGeminiApi.generateContent.mockRejectedValue(new Error('API Error'));
+      const result = await parseEventChanges('any');
+      expect(result).toEqual({ error: 'Failed to parse event changes from text.' });
     });
   });
 });

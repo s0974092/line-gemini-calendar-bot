@@ -213,29 +213,42 @@ export const findEventsInTimeRange = async (
 
 /**
  * 根據時間範圍和可選的關鍵字搜尋事件。
+ * 如果未提供 timeMin，則預設從現在開始搜尋。
  * @param calendarId 要搜尋的日曆 ID。
- * @param timeMin 搜尋的開始時間範圍。
- * @param timeMax 搜尋的結束時間範圍。
+ * @param timeMin 搜尋的開始時間範圍 (ISO 字串)。如果為 null/undefined，則預設為現在。
+ * @param timeMax 搜尋的結束時間範圍 (ISO 字串)。
  * @param keyword 可選的關鍵字以供篩選。
- * @returns 解析為找到的事件陣列的 Promise。
+ * @returns A promise that resolves to an object containing the found events and a potential nextPageToken.
  */
 export const searchEvents = async (
   calendarId: string,
-  timeMin: string,
-  timeMax: string,
+  timeMin: string | null | undefined,
+  timeMax: string | null | undefined,
   keyword?: string
-): Promise<calendar_v3.Schema$Event[]> => {
+): Promise<{ events: calendar_v3.Schema$Event[], nextPageToken?: string | null | undefined }> => {
   try {
-    const response = await calendar.events.list({
+    const params: calendar_v3.Params$Resource$Events$List = {
       calendarId: calendarId,
-      timeMin: timeMin,
-      timeMax: timeMax,
       q: keyword || undefined, // 如果提供則使用關鍵字，否則為 undefined
       maxResults: 10,
       singleEvents: true,
       orderBy: 'startTime',
-    });
-    return response.data.items || [];
+    };
+
+    // 如果未提供 timeMin，則預設為現在時間，以主要搜尋未來的事件。
+    // 這可以防止在一般查詢中傳回不相關的過去事件。
+    params.timeMin = timeMin || new Date().toISOString();
+
+    if (timeMax) {
+      params.timeMax = timeMax;
+    }
+    // 如果未提供 timeMax，我們會讓它保持未定義狀態，以搜尋到未來的任何時間。
+
+    const response = await calendar.events.list(params);
+    return {
+        events: response.data.items || [],
+        nextPageToken: response.data.nextPageToken,
+    };
   } catch (error) {
     console.error('Error searching for events:', error);
     throw new Error('Failed to search for events.');

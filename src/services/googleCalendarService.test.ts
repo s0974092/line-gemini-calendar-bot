@@ -191,9 +191,9 @@ describe('googleCalendarService', () => {
   describe('searchEvents', () => {
     it('should search events with the given parameters', async () => {
       const mockEvents = [{ id: 'event1', summary: 'Found Event' }];
-      mockGoogleApi.events.list.mockResolvedValue({ data: { items: mockEvents } });
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: mockEvents, nextPageToken: null } });
       const result = await searchEvents('primary', '2025-01-01T00:00:00Z', '2025-01-01T23:59:59Z', 'Test');
-      expect(result).toEqual(mockEvents);
+      expect(result).toEqual({ events: mockEvents, nextPageToken: null });
     });
 
     it('should throw an error if the API call fails', async () => {
