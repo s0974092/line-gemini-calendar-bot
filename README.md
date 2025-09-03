@@ -25,7 +25,7 @@ This bot is built with Node.js and TypeScript, and is designed for serverless de
 ### 🛠️ Tech Stack
 
 -   **Backend**: Node.js, Express.js, TypeScript
--   **AI Model**: Google Gemini API (`gemini-1.5-flash`)
+-   **AI Model**: Google Gemini API (`gemini-2.5-flash`)
 -   **Calendar Integration**: Google Calendar API v3
 -   **Messaging Platform**: LINE Messaging API
 -   **Testing**: Jest, ts-jest
@@ -131,6 +131,7 @@ This application is optimized for deployment on [Vercel](https://vercel.com/).
 3.  **設定環境變數:**
     -   將 `.env.example` 檔案複製一份，並重新命名為 `.env`。
     -   在 `.env` 檔案中，填入所有必要的憑證。您將需要來自 LINE Developer Console、Google Cloud Console (用於 Gemini 和 Calendar API) 的金鑰，以及您自己的 LINE User ID 白名單。
+    -   **AI 模型配置**: 可以透過 `GEMINI_MODEL` 環境變數來設定使用的 Gemini 模型版本，預設為 `gemini-2.5-flash`。
 
 ### 🏃 本地端執行
 
@@ -193,7 +194,7 @@ npm test
 ### 🛠️ 技术栈
 
 -   **后端**: Node.js, Express.js, TypeScript
--   **AI 模型**: Google Gemini API (`gemini-1.5-flash`)
+-   **AI 模型**: Google Gemini API (`gemini-2.5-flash`)
 -   **日历服务**: Google Calendar API v3
 -   **消息平台**: LINE Messaging API
 -   **测试框架**: Jest, ts-jest
@@ -215,6 +216,7 @@ npm test
 3.  **设置环境变量:**
     -   将 `.env.example` 文件复制一份，并重新命名为 `.env`。
     -   在 `.env` 文件中，填入所有必要的凭证。您将需要来自 LINE Developer Console、Google Cloud Console (用于 Gemini 和 Calendar API) 的密钥，以及您自己的 LINE User ID 白名单。
+    -   **AI 模型配置**: 可以通过 `GEMINI_MODEL` 环境变量来设定使用的 Gemini 模型版本，默认为 `gemini-2.5-flash`。
 
 ### 🏃 本地端运行
 

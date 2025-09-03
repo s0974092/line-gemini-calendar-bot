@@ -8,7 +8,7 @@ A key feature of this bot is its ability to handle multi-turn conversations. If 
 
 **Core Technologies:**
 - **Backend:** Node.js, Express.js, TypeScript
-- **AI Model:** Google Gemini API (`gemini-1.5-flash`) for natural language understanding (NLU), including parsing event details, recurrence rules, and translating rules to human-readable text.
+- **AI Model:** Google Gemini API (configurable via `GEMINI_MODEL` environment variable, default: `gemini-2.5-flash`) for natural language understanding (NLU), including parsing event details, recurrence rules, and translating rules to human-readable text.
 - **Calendar Integration:** Google Calendar API (via `googleapis` library) with OAuth 2.0.
 - **Messaging Platform:** LINE Messaging API (via `@line/bot-sdk`).
 - **Deployment:** Vercel (Serverless Functions).

@@ -1,7 +1,8 @@
 import { GoogleGenerativeAI, Part } from '@google/generative-ai';
 
-// 從環境變數中獲取 API 金鑰
+// 從環境變數中獲取 API 金鑰和模型名稱
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
 // --- 日曆事件的類型定義 ---
 export interface CalendarEvent {
@@ -126,7 +127,7 @@ You are an expert in the iCalendar RRULE format. Your task is to translate a giv
 const callGeminiText = async (prompt: string, text: string) => {
   try {
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: DEFAULT_MODEL,
       generationConfig: {
         temperature: 0,
         responseMimeType: "application/json",
@@ -146,7 +147,7 @@ const callGeminiText = async (prompt: string, text: string) => {
 
 const callGeminiVision = async (prompt: string, imageBase64: string, mimeType: string) => {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
     const imagePart: Part = {
       inlineData: {
         data: imageBase64,
