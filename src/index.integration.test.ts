@@ -225,6 +225,57 @@ describe('handleFileMessage', () => {
 
       expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '處理您上傳的 CSV 檔案時發生錯誤。' });
     });
+
+    it('should reply with an error if state is invalid', async () => {
+      const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
+      // No state is set
+      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', {
+        type: 'text',
+        text: '感謝您傳送檔案，但我不知道該如何處理它。如果您想建立班表，請先傳送「幫 [姓名] 建立班表」。'
+      });
+    });
+
+    it('should reply with an error for non-csv files', async () => {
+      const message = { id: 'mockMessageId', fileName: 'test.txt' } as FileEventMessage;
+      const state = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', {
+        type: 'text',
+        text: '檔案格式錯誤，請上傳 .csv 格式的班表檔案。'
+      });
+    });
+
+    it('should handle single calendar choice correctly', async () => {
+        const csvContent = `姓名,職位,9/3\n傅臻,全職,早班`;
+        const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
+        const state = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
+        conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+        const stream = new Readable();
+        stream.push(csvContent);
+        stream.push(null);
+        mockGetMessageContent.mockResolvedValue(stream);
+        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]); // Single calendar
+
+        await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
+
+        expect(mockReplyMessage).toHaveBeenCalledWith(
+            'mockReplyToken',
+            expect.arrayContaining([
+                expect.any(Object),
+                expect.objectContaining({
+                    template: expect.objectContaining({
+                        text: '您要將這 1 個活動一次全部新增至您的 Google 日曆嗎？',
+                        actions: [
+                            { type: 'postback', label: '全部新增', data: 'action=createAllShifts&calendarId=primary' },
+                            { type: 'postback', label: '取消', data: 'action=cancel' },
+                        ]
+                    })
+                })
+            ])
+        );
+    });
   });
 
 
@@ -455,10 +506,12 @@ describe('handleFileMessage', () => {
 
       await handleEvent(mockEvent);
 
-      // We need to wait for the async batch processing to complete
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', {
+        type: 'text',
+        text: '收到！正在為您處理 3 個活動...',
+      });
       expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, { type: 'text', text: `批次匯入完成：\n- 新增成功 1 件\n- 已存在 1 件\n- 失敗 1 件` });
+      expect(conversationStateStore.has(WHITELISTED_USER_ID)).toBe(false);
     });
 
     it('create_after_choice: 應該在選擇日曆後成功建立活動並回覆樣板訊息', async () => {
@@ -520,6 +573,70 @@ describe('handleFileMessage', () => {
 
       // 4. 確保沒有多餘的 pushMessage
       expect(mockPushMessage).not.toHaveBeenCalled();
+    });
+
+    it('should handle cancel action', async () => {
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'replyTokenForCancel',
+        postback: { data: 'action=cancel' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      expect(conversationStateStore.has(WHITELISTED_USER_ID)).toBe(false);
+      expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForCancel', {
+        type: 'text',
+        text: '好的，操作已取消。',
+      });
+    });
+
+    it('should handle DuplicateEventError on create_after_choice', async () => {
+        const event = { start: '2025-01-01T10:00:00+08:00', end: '2025-01-01T11:00:00+08:00', title: 'Test Event' };
+        const state = { step: 'awaiting_calendar_choice', event, timestamp: Date.now() };
+        conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+        mockFindEventsInTimeRange.mockResolvedValue([]); // No conflicts
+        const duplicateError = new (require('./services/googleCalendarService').DuplicateEventError)('duplicate', 'http://example.com/duplicate');
+        mockCreateCalendarEvent.mockRejectedValue(duplicateError);
+
+        const mockEvent = createMockEvent({
+            type: 'postback',
+            replyToken: 'replyTokenForDuplicate',
+            postback: { data: 'action=create_after_choice&calendarId=primary' },
+        }) as PostbackEvent;
+
+        await handleEvent(mockEvent);
+
+        expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, expect.objectContaining({
+            type: 'template',
+            altText: '活動已存在',
+        }));
+    });
+
+    it('should handle successful force_create', async () => {
+        const eventData = { title: 'Forced Event', start: '2025-01-01T12:00:00+08:00', end: '2025-01-01T13:00:00+08:00' };
+        const state = { step: 'awaiting_conflict_confirmation', event: eventData, calendarId: 'primary', timestamp: Date.now() };
+        conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+        
+        mockCreateCalendarEvent.mockResolvedValue({
+            htmlLink: 'http://example.com/forced_event',
+            organizer: { email: 'primary' } 
+        });
+        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary Calendar' }]);
+
+        const mockEvent = createMockEvent({
+            type: 'postback',
+            replyToken: 'replyTokenForForceCreate',
+            postback: { data: 'action=force_create' },
+        }) as PostbackEvent;
+
+        await handleEvent(mockEvent);
+
+        expect(mockCreateCalendarEvent).toHaveBeenCalledWith(eventData, 'primary');
+        expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, expect.objectContaining({
+            type: 'template',
+            altText: '活動「Forced Event」已新增',
+        }));
     });
   });
 
@@ -707,6 +824,179 @@ describe('handleFileMessage', () => {
             type: 'text',
             text: '抱歉，請求已逾時，找不到要修改的活動。',
         });
+    });
+  });
+
+  describe('handleNewCommand for query_event', () => {
+    it('should reply with a "no events found" message when no events are found', async () => {
+      mockClassifyIntent.mockResolvedValue({
+        type: 'query_event',
+        query: 'nonexistent event',
+        timeMin: '2025-01-01T00:00:00+08:00',
+        timeMax: '2025-01-01T23:59:59+08:00',
+      });
+      mockSearchEvents.mockResolvedValue({ events: [], nextPageToken: null });
+
+      const mockMessageEvent = createMockEvent({
+        type: 'message',
+        replyToken: 'replyTokenForQueryNotFound',
+        message: createMockTextMessage('find nonexistent event'),
+      }) as MessageEvent;
+
+      await handleEvent(mockMessageEvent);
+
+      expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForQueryNotFound', {
+        type: 'text',
+        text: '抱歉，找不到與「nonexistent event」相關的未來活動。'
+      });
+    });
+
+    it('should send a carousel for found events', async () => {
+        mockClassifyIntent.mockResolvedValue({
+            type: 'query_event',
+            query: 'Test Event',
+            timeMin: '2025-01-01T00:00:00+08:00',
+            timeMax: '2025-01-01T23:59:59+08:00',
+        });
+        const events = [
+            {
+              summary: 'Test Event 1',
+              start: { dateTime: '2025-10-27T10:00:00+08:00' },
+              end: { dateTime: '2025-10-27T11:00:00+08:00' },
+              organizer: { email: 'primary' },
+              id: 'event1',
+              htmlLink: 'link1',
+            },
+        ];
+        mockSearchEvents.mockResolvedValue({ events: events, nextPageToken: null });
+        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Personal Calendar' }]);
+
+        const mockMessageEvent = createMockEvent({
+            type: 'message',
+            replyToken: 'replyTokenForQueryFound',
+            message: createMockTextMessage('find Test Event'),
+        }) as MessageEvent;
+
+        await handleEvent(mockMessageEvent);
+
+        expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForQueryFound', [
+            { type: 'text', text: '為您找到 1 個與「Test Event」相關的活動：' },
+            expect.objectContaining({
+              type: 'template',
+              template: expect.objectContaining({
+                type: 'carousel',
+              }),
+            }),
+        ]);
+    });
+  });
+
+  describe('handleNewCommand complex cases', () => {
+    it('create_event: should default end time if missing', async () => {
+      const eventData = { title: 'Event with no end time', start: '2025-11-01T10:00:00+08:00' };
+      mockClassifyIntent.mockResolvedValue({ type: 'create_event', event: eventData });
+      mockFindEventsInTimeRange.mockResolvedValue([]);
+      mockCreateCalendarEvent.mockResolvedValue({ htmlLink: 'link' });
+
+      const mockMessageEvent = createMockEvent({
+        type: 'message',
+        replyToken: 'replyTokenForDefaultEnd',
+        message: createMockTextMessage('some text'),
+      }) as MessageEvent;
+
+      await handleEvent(mockMessageEvent);
+
+      const expectedEndDate = new Date(eventData.start);
+      expectedEndDate.setHours(expectedEndDate.getHours() + 1);
+
+      expect(mockCreateCalendarEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ end: expectedEndDate.toISOString() }),
+        'primary'
+      );
+    });
+
+    it('update_event: should handle update failure', async () => {
+        const intent = {
+            type: 'update_event',
+            query: 'Event to update',
+            timeMin: '2025-01-01T00:00:00+08:00',
+            timeMax: '2025-01-01T23:59:59+08:00',
+            changes: { title: 'New Title' },
+        };
+        mockClassifyIntent.mockResolvedValue(intent);
+        mockSearchEvents.mockResolvedValue({ events: [{ id: 'event1', organizer: { email: 'primary' } }], nextPageToken: null });
+        mockUpdateEvent.mockRejectedValue(new Error('Update failed'));
+
+        const mockMessageEvent = createMockEvent({
+            type: 'message',
+            replyToken: 'replyTokenForUpdateFail',
+            message: createMockTextMessage('update event'),
+        }) as MessageEvent;
+
+        await handleEvent(mockMessageEvent);
+
+        expect(mockPushMessage).toHaveBeenCalledWith('test', {
+            type: 'text',
+            text: '抱歉，更新活動時發生錯誤。',
+        });
+    });
+
+    it('delete_event: should reply if multiple events are found', async () => {
+        mockClassifyIntent.mockResolvedValue({ type: 'delete_event', query: 'meeting' });
+        mockSearchEvents.mockResolvedValue({ events: [{}, {}], nextPageToken: null });
+
+        const mockMessageEvent = createMockEvent({
+            type: 'message',
+            replyToken: 'replyTokenForDeleteMultiple',
+            message: createMockTextMessage('delete meeting'),
+        }) as MessageEvent;
+
+        await handleEvent(mockMessageEvent);
+
+        expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForDeleteMultiple', {
+            type: 'text',
+            text: '我找到了多個符合條件的活動，請您先用「查詢」功能找到想刪除的活動，然後再點擊該活動下方的「刪除」按鈕。',
+        });
+    });
+
+    it('should handle create_schedule intent', async () => {
+        mockClassifyIntent.mockResolvedValue({ type: 'create_schedule', personName: 'John Doe' });
+        
+        const mockMessageEvent = createMockEvent({
+            type: 'message',
+            replyToken: 'replyTokenForCreateSchedule',
+            message: createMockTextMessage('create schedule for John Doe'),
+        }) as MessageEvent;
+
+        await handleEvent(mockMessageEvent);
+
+        const state = JSON.parse(conversationStateStore.get('test'));
+        expect(state.step).toBe('awaiting_csv_upload');
+        expect(state.personName).toBe('John Doe');
+        expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForCreateSchedule', {
+            type: 'text',
+            text: '好的，請現在傳送您要為「John Doe」分析的班表 CSV 檔案。',
+        });
+    });
+
+    it('should do nothing for incomplete or unknown intents', async () => {
+        mockClassifyIntent.mockResolvedValue({ type: 'incomplete', originalText: 'incomplete text' });
+        const mockMessageEvent1 = createMockEvent({
+            type: 'message',
+            replyToken: 'replyTokenForIncomplete',
+            message: createMockTextMessage('incomplete text'),
+        }) as MessageEvent;
+        const result1 = await handleEvent(mockMessageEvent1);
+        expect(result1).toBeNull();
+
+        mockClassifyIntent.mockResolvedValue({ type: 'unknown', originalText: 'unknown text' });
+        const mockMessageEvent2 = createMockEvent({
+            type: 'message',
+            replyToken: 'replyTokenForUnknown',
+            message: createMockTextMessage('unknown text'),
+        }) as MessageEvent;
+        const result2 = await handleEvent(mockMessageEvent2);
+        expect(result2).toBeNull();
     });
   });
 

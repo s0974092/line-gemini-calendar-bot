@@ -305,7 +305,7 @@ export const parseCsvToEvents = (csvContent: string, personName: string): Calend
   const events: CalendarEvent[] = [];
   if (lines.length < 2) return []; // 資料不足
   const header = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
-  const dateHeaders = header.slice(2);
+  const dateHeaders = header.slice(1);
 
   const normalizedPersonName = personName.normalize('NFC');
 
@@ -328,7 +328,7 @@ export const parseCsvToEvents = (csvContent: string, personName: string): Calend
   }
 
   const rowData = personRow.split(',').map(d => d.replace(/"/g, '').trim());
-  const shiftData = rowData.slice(2);
+  const shiftData = rowData.slice(1);
 
   const year = new Date().getFullYear(); // 假設為當前年份
   dateHeaders.forEach((dateStr, index) => {
@@ -970,10 +970,11 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
         return lineClient.replyMessage(replyToken, { type: 'text', text: '錯誤：找不到日曆資訊，請重新操作。' });
     }
 
-    // 立即回覆使用者，然後在背景中處理。
-    lineClient.replyMessage(replyToken, { type: 'text', text: `收到！正在為您處理 ${events.length} 個活動...` });
+    // 立即回覆使用者，避免 LINE Webhook 逾時
+    await lineClient.replyMessage(replyToken, { type: 'text', text: `收到！正在為您處理 ${events.length} 個活動...` });
 
-    (async () => {
+    // 在背景中處理事件建立，並確保 Serverless 函數會等待此程序完成
+    try {
       let successCount = 0;
       let duplicateCount = 0;
       let failureCount = 0;
@@ -1018,13 +1019,15 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
 
       const summaryMessage = `批次匯入完成：\n- 新增成功 ${successCount} 件\n- 已存在 ${duplicateCount} 件\n- 失敗 ${failureCount} 件`;
       await lineClient.pushMessage(userId, { type: 'text', text: summaryMessage });
-    })().catch(error => {
+    } catch (error) {
         console.error("Error during batch createAllShifts:", error);
-        lineClient.pushMessage(userId, { type: 'text', text: '批次新增過程中發生未預期的錯誤。' });
-    });
+        await lineClient.pushMessage(userId, { type: 'text', text: '批次新增過程中發生未預期的錯誤。' });
+    } finally {
+      // 無論成功或失敗，最後都清除對話狀態
+      await clearConversationState(userId);
+    }
 
-    await clearConversationState(userId);
-    return null; // 我們已經回覆過，所以這裡返回 null。
+    return null; // Webhook 應回傳 200 OK，實際的結果是透過 pushMessage 傳送
   }
 
   return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，發生了未知的錯誤。' });

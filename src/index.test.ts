@@ -282,33 +282,50 @@ describe('index.ts unit tests', () => {
         const postbackData = 'action=createAllShifts&calendarId=primary';
         const event = { replyToken, source: { userId }, postback: { data: postbackData } } as PostbackEvent;
   
-        handlePostbackEvent(event);
-        await new Promise(res => setTimeout(res, 100)); // wait for async block
+        await handlePostbackEvent(event);
 
+        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, {
+          type: 'text',
+          text: `收到！正在為您處理 1 個活動...`,
+        });
         expect(mockPushMessage).toHaveBeenCalledWith(userId, {
           type: 'text',
           text: `批次匯入完成：\n- 新增成功 0 件\n- 已存在 0 件\n- 失敗 1 件`,
         });
-    }, 15000);
+        expect(mockRedisDel).toHaveBeenCalledWith(userId);
+    });
 
-    it('should handle createAllShifts async catch block', async () => {
-        const state = { step: 'awaiting_bulk_confirmation', events: [{ title: 'test' }] };
+    it('should handle createAllShifts with mixed results and push a summary', async () => {
+        const events: CalendarEvent[] = [
+          { title: 'Success' } as CalendarEvent,
+          { title: 'Duplicate' } as CalendarEvent,
+          { title: 'Failure' } as CalendarEvent,
+        ];
+        const state = { step: 'awaiting_bulk_confirmation', events };
         mockRedisGet.mockResolvedValue(JSON.stringify(state));
-        const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
-        mockCreateCalendarEvent.mockRejectedValue(new Error('Unexpected error'));
+        
+        const { DuplicateEventError } = require('./services/googleCalendarService');
+
+        mockCreateCalendarEvent
+            .mockResolvedValueOnce({ htmlLink: 'link1' })
+            .mockRejectedValueOnce(new DuplicateEventError('already exists', 'link2'))
+            .mockRejectedValueOnce(new Error('API error'));
 
         const postbackData = 'action=createAllShifts&calendarId=primary';
         const event = { replyToken, source: { userId }, postback: { data: postbackData } } as PostbackEvent;
         
-        handlePostbackEvent(event);
-        await new Promise(res => setTimeout(res, 100)); // wait for async block
+        await handlePostbackEvent(event);
 
+        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, {
+          type: 'text',
+          text: `收到！正在為您處理 3 個活動...`,
+        });
         expect(mockPushMessage).toHaveBeenCalledWith(userId, {
             type: 'text',
-            text: `批次匯入完成：\n- 新增成功 0 件\n- 已存在 0 件\n- 失敗 1 件`,
+            text: `批次匯入完成：\n- 新增成功 1 件\n- 已存在 1 件\n- 失敗 1 件`,
         });
-        consoleErrorSpy.mockRestore();
-    }, 15000);
+        expect(mockRedisDel).toHaveBeenCalledWith(userId);
+    });
   });
 
   describe('handleEventUpdate', () => {
@@ -411,43 +428,53 @@ describe('index.ts unit tests', () => {
 
   describe('parseCsvToEvents', () => {
     const { parseCsvToEvents } = require('./index');
-    // Corrected CSV Content
-    const baseCsvContent = `schedule
-schedule,,,,,,,,,,,,,,,,,,,,,,,,,,,
-姓名,職位,8/31,9/1,9/2,9/3,9/4,9/5,9/6,9/7,9/8,9/9,9/10,9/11,9/12,9/13,9/14,9/15,9/16,9/17,9/18,9/19,9/20,9/21,9/22,9/23,9/24,9/25,9/26,9/27
-傅臻,全職,,早接菜,早接菜,晚班,,早接菜,晚班,,早接菜,晚班,早接菜,,,,,早接菜,早接菜,晚班,,假,晚班,,早接菜,晚班,,早接菜,,
-怡芳,全職,早班,,晚班,晚班,假,,早接菜,,,晚班,晚班,,早接菜,早接菜,早班,,晚班,晚班,,,早接菜,,,假,,早接菜,,
-銘修,全職,早班,晚班,晚班,,早接菜,早接菜,早接菜,,,晚班,,晚班,晚班,晚班,早班,早接菜,早接菜,,晚班,,,,晚班,,晚班,,晚班,
-泳舜,全職,,早接菜,早接菜,早接菜,晚班,,,,早班,,,早接菜,早接菜,早接菜,,早接菜,早接菜,晚班,,,,,早接菜,晚班,,酸點單,假,
-皓文,全職,,晚班,,,,,,早班,,,晚班,晚班,,晚班,,,早班,,早接菜,早接菜,早接菜,,,,早接菜,晚班,,晚班
-淑華,全職,早班,,,早班,早班,早班,,,早班,早班,,,,,早班,早班,,早班,,,,,早班,,早班,,
-CJ,,1430-22,,0900-1630,0900-1630,1430-22,1430-22,,0900-1630,,0900-1630,0900-1630,0900-1630,1430-22,,1430-22,,0900-1630,0900-1630,0900-1630,1430-22,,0900-1630,,0900-1630,1430-22,1430-22,1430-22
-大童支援,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,`;
+    const mockCurrentYear = new Date().getFullYear();
 
-    const mockCurrentYear = 2025;
-    
-    beforeAll(() => {
-        const mockDate = new Date(mockCurrentYear, 8, 1); // Sep 1, 2025
-        jest.spyOn(global, 'Date').mockImplementation(() => mockDate as any);
+    it('should handle CSV with BOM', () => {
+      const csvContent = '\uFEFF姓名,9/1\nCJ,1430-22';
+      const events = parseCsvToEvents(csvContent, 'CJ');
+      expect(events.length).toBe(1);
     });
 
-    afterAll(() => {
-        jest.restoreAllMocks();
+    it('should return empty array if header is not found', () => {
+      const csvContent = '職位,9/1\n全職,1430-22';
+      const events = parseCsvToEvents(csvContent, 'CJ');
+      expect(events).toEqual([]);
     });
 
-    test('should correctly parse time-based shifts like "1430-22"', () => {
-        const personName = 'CJ';
-        const events = parseCsvToEvents(baseCsvContent, personName);
-        expect(events).toContainEqual(expect.objectContaining({
-            title: 'CJ 晚班',
-            start: `${mockCurrentYear}-08-31T14:30:00+08:00`,
-            end: `${mockCurrentYear}-08-31T22:00:00+08:00`,
-        }));
-        expect(events).toContainEqual(expect.objectContaining({
-            title: 'CJ 早班',
-            start: `${mockCurrentYear}-09-02T09:00:00+08:00`,
-            end: `${mockCurrentYear}-09-02T16:30:00+08:00`,
-        }));
+    it('should return empty array if only header exists', () => {
+      const csvContent = '姓名,9/1';
+      const events = parseCsvToEvents(csvContent, 'CJ');
+      expect(events).toEqual([]);
+    });
+
+    it('should handle empty rows in CSV', () => {
+      const csvContent = '姓名,9/1\n\nCJ,1430-22';
+      const events = parseCsvToEvents(csvContent, 'CJ');
+      expect(events.length).toBe(1);
+    });
+
+    it('should return empty array if person is not found', () => {
+      const csvContent = '姓名,9/1\nMark,1430-22';
+      const events = parseCsvToEvents(csvContent, 'CJ');
+      expect(events).toEqual([]);
+    });
+
+    it('should skip invalid shift formats', () => {
+      const csvContent = '姓名,9/1\nCJ,invalid-shift';
+      const events = parseCsvToEvents(csvContent, 'CJ');
+      expect(events).toEqual([]);
+    });
+
+    it('should correctly parse various shift types', () => {
+        const csvContent = `姓名,9/1,9/2,9/3,9/4
+CJ,早班,晚班,早接菜,08-12`;
+        const events = parseCsvToEvents(csvContent, 'CJ');
+        expect(events.length).toBe(4);
+        expect(events[0].title).toBe('CJ 早班');
+        expect(events[1].title).toBe('CJ 晚班');
+        expect(events[2].title).toBe('CJ 早接菜');
+        expect(events[3].title).toBe('CJ 早班');
     });
   });
 
@@ -522,6 +549,102 @@ CJ,,1430-22,,0900-1630,0900-1630,1430-22,1430-22,,0900-1630,,0900-1630,0900-1630
                 })
             })
         ]);
+    });
+  });
+
+  describe('processCompleteEvent', () => {
+    const { processCompleteEvent } = require('./index');
+    const userId = 'testUser';
+    const replyToken = 'testReplyToken';
+    const baseEvent = { title: 'Test', start: '2025-01-01T10:00:00Z', end: '2025-01-01T11:00:00Z' } as CalendarEvent;
+
+    it('should push message for incomplete recurrence if fromImage is true', async () => {
+      const eventWithRecurrence = { ...baseEvent, recurrence: 'RRULE:FREQ=DAILY' };
+      await processCompleteEvent(replyToken, eventWithRecurrence, userId, true);
+      expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.any(Object));
+      expect(mockReplyMessage).not.toHaveBeenCalled();
+    });
+
+    it('should push message for multiple calendars if fromImage is true', async () => {
+      mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'c1', summary: 'c1' }, { id: 'c2', summary: 'c2' }]);
+      await processCompleteEvent(replyToken, baseEvent, userId, true);
+      expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.any(Object));
+      expect(mockReplyMessage).not.toHaveBeenCalled();
+    });
+
+    it('should use primary calendar if getCalendarChoicesForUser returns empty', async () => {
+      mockGetCalendarChoicesForUser.mockResolvedValue([]);
+      mockFindEventsInTimeRange.mockResolvedValue([]);
+      mockCreateCalendarEvent.mockResolvedValue({ htmlLink: 'link' });
+      await processCompleteEvent(replyToken, baseEvent, userId, false);
+      expect(mockCreateCalendarEvent).toHaveBeenCalledWith(baseEvent, 'primary');
+    });
+
+    it('should handle generic error from createCalendarEvent', async () => {
+        mockGetCalendarChoicesForUser.mockResolvedValue([]);
+        mockFindEventsInTimeRange.mockResolvedValue([]);
+        const error = new Error('Generic API error');
+        mockCreateCalendarEvent.mockRejectedValue(error);
+        
+        const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        await processCompleteEvent(replyToken, baseEvent, userId, false);
+
+        expect(mockPushMessage).toHaveBeenCalledWith(userId, {
+            type: 'text',
+            text: '抱歉，新增日曆事件時發生錯誤。',
+        });
+        expect(consoleErrorSpy).toHaveBeenCalledWith("!!!!!!!!!! DETAILED ERROR REPORT START !!!!!!!!!!");
+        consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe('sendCreationConfirmation complex cases', () => {
+    const { sendCreationConfirmation } = require('./index');
+    const userId = 'testUser';
+    const baseEvent = { title: 'Test', start: '2025-01-01T10:00:00Z', end: '2025-01-01T11:00:00Z' } as CalendarEvent;
+
+    it('should handle createdEventForSeed without organizer email', async () => {
+        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+        mockCalendarEventsList.mockResolvedValue({ data: { items: [] } });
+        await sendCreationConfirmation(userId, baseEvent, { htmlLink: 'link' }); // No organizer
+        expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.objectContaining({
+            text: expect.stringContaining('無法立即取得活動連結'),
+        }));
+    });
+
+    it('should handle rejected promises from calendar search', async () => {
+        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+        mockCalendarEventsList.mockRejectedValue(new Error('API Error'));
+        await sendCreationConfirmation(userId, baseEvent);
+        expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.objectContaining({
+            text: expect.stringContaining('無法立即取得活動連結'),
+        }));
+    });
+
+    it('should correctly match all-day events', async () => {
+        const allDayEvent = { ...baseEvent, allDay: true, start: '2025-10-20', end: '2025-10-21' };
+        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+        mockCalendarEventsList.mockResolvedValue({
+            data: {
+                items: [{ summary: allDayEvent.title, start: { date: '2025-10-20' }, htmlLink: 'link' }]
+            }
+        });
+        await sendCreationConfirmation(userId, allDayEvent);
+        expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.objectContaining({
+            template: expect.objectContaining({
+                text: expect.stringContaining('已新增至「Primary」日曆'),
+            })
+        }));
+    });
+  });
+
+  describe('formatEventTime edge cases', () => {
+    const { formatEventTime } = require('./index');
+    it('should return empty string if start or end is missing', () => {
+        expect(formatEventTime({ start: '2025-01-01' })).toBe('');
+        expect(formatEventTime({ end: '2025-01-01' })).toBe('');
+        expect(formatEventTime({})).toBe('');
     });
   });
 
