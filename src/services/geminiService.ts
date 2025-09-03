@@ -64,17 +64,17 @@ You are an expert assistant for parsing a shift schedule image for an employee n
 6.  **Skip Blank Days:** If the intersection cell is blank or contains "休" or "假", it is a day off and must be skipped.
 7.  **Format the Output:** Create a JSON object containing an "events" array for all valid shifts found.
 
-# Time Format
+# Time Format:
 - "1430-22" means 14:30 to 22:00.
 - "09-1630" means 09:00 to 16:30.
 
-# Other Rules
+# Other Rules:
 - Today's date is: ${currentDate}.
 - Timezone is Taipei Standard Time (UTC+8).
 - The event title MUST be "${personName} " followed by the time range.
 - Ignore summary columns on the far right (e.g., "週工時").
 
-# JSON Event Format
+# JSON Event Format:
 {
   "title": "string",
   "start": "YYYY-MM-DDTHH:mm:ss+08:00",
@@ -120,6 +120,32 @@ You are an expert in the iCalendar RRULE format. Your task is to translate a giv
 {
   "description": "string"
 }
+`;
+
+// --- 新增：解析事件更新的提示 ---
+const getUpdateChangesPrompt = (currentDate: string) => `
+You are an expert calendar assistant. Your task is to parse a user's natural language description of a change to an event and convert it into a structured JSON object.
+
+# Rules:
+- Today's date is: ${currentDate}. Use this as a reference for relative dates.
+- The user is already in the process of updating an event, so their input will be concise.
+- The output MUST be a single, valid JSON object. Do not add any extra text or explanations.
+- If the user specifies a new time, provide both "start" and "end" times. Default duration is 1 hour if no end time is specified.
+- The timezone is Taipei Standard Time (UTC+8).
+- If the user's request is unclear or doesn't seem to describe a change, return an error: {"error": "Cannot parse changes."}
+
+# JSON Format for Changes:
+{
+  "title": "string" | null,
+  "start": "YYYY-MM-DDTHH:mm:ss+08:00" | null,
+  "end": "YYYY-MM-DDTHH:mm:ss+08:00" | null
+}
+
+# Examples (Today is 2025-09-04):
+- User Input: "時間改到明天下午兩點" -> {"title": null, "start": "2025-09-05T14:00:00+08:00", "end": "2025-09-05T15:00:00+08:00"}
+- User Input: "改到後天早上10點" -> {"title": null, "start": "2025-09-06T10:00:00+08:00", "end": "2025-09-06T11:00:00+08:00"}
+- User Input: "標題改成團隊午餐" -> {"title": "團隊午餐", "start": null, "end": null}
+- User Input: "改成明天下午三點的團隊午餐" -> {"title": "團隊午餐", "start": "2025-09-05T15:00:00+08:00", "end": "2025-09-05T16:00:00+08:00"}
 `;
 
 // --- API 呼叫函式 ---
@@ -214,15 +240,26 @@ export const translateRruleToHumanReadable = async (rrule: string): Promise<{ de
   }
 };
 
+export const parseEventChanges = async (text: string): Promise<Partial<CalendarEvent> | { error: string }> => {
+  try {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+    const prompt = getUpdateChangesPrompt(today);
+    return await callGeminiText(prompt, text);
+  } catch (error) {
+    return { error: 'Failed to parse event changes from text.' };
+  }
+};
+
 // --- 新增：意圖分類函式 ---
 export type Intent = 
   | { type: 'create_event'; event: Partial<CalendarEvent> }
   | { type: 'query_event'; timeMin: string; timeMax: string; query: string; }
-  | { type: 'update_event'; query: string; changes: Partial<CalendarEvent> }
+  | { type: 'update_event'; timeMin: string; timeMax: string; query: string; changes: Partial<CalendarEvent> }
   | { type: 'delete_event'; timeMin: string; timeMax: string; query: string; }
   | { type: 'create_schedule'; personName: string }
   | { type: 'incomplete'; originalText: string }
   | { type: 'unknown'; originalText: string };
+
 
 const getIntentPrompt = (currentDate: string) => `
 You are an expert in understanding user requests for a calendar bot. Your primary goal is to classify the user's intent and extract relevant information into a structured JSON object.
@@ -232,9 +269,10 @@ You are an expert in understanding user requests for a calendar bot. Your primar
 # Intents:
 1.  **create_event**: User wants to add a new event.
     - Extracts: A full or partial event object, same as the event creation prompt.
+    - **CRITICAL**: If the input contains a specific time/date AND a clear event title (e.g., "會議", "聚餐", "站立會議"), especially with recurrence indicators like "每週", "每天", "每月", "每年", it MUST be classified as \`create_event\`.
 2.  **query_event**: User wants to find an existing event.
     - Extracts: A time range (timeMin, timeMax) and a text search keyword (query).
-    - **CRITICAL**: The 'query' should be the most likely title of the event. Strip away conversational filler like "活動", "的活動", "的事", "行程", "幫我找一下".
+    - **CRITICAL**: The 'query' should be the most likely title of an *existing* event. Strip away conversational filler like "活動", "的活動", "的事", "行程", "幫我找一下", "查一下", "有什麼".
     - **CRITICAL**: If the user is asking a general question about what events exist (e.g., "有什麼事", "有什麼活動"), the 'query' field should be an empty string.
 3.  **update_event**: User wants to change an existing event.
     - Extracts: A query to find the original event and the changes to apply.
@@ -249,18 +287,22 @@ You are an expert in understanding user requests for a calendar bot. Your primar
 # JSON Output Structure:
 - For "create_event": { "type": "create_event", "event": { ... } }
 - For "query_event": { "type": "query_event", "timeMin": "YYYY-MM-DDTHH:mm:ss+08:00", "timeMax": "YYYY-MM-DDTHH:mm:ss+08:00", "query": "..." }
-- For "update_event": { "type": "update_event", "query": "...", "changes": { ... } }
+- For "update_event": { "type": "update_event", "timeMin": "YYYY-MM-DDTHH:mm:ss+08:00", "timeMax": "YYYY-MM-DDTHH:mm:ss+08:00", "query": "...", "changes": { ... } }
 - For "delete_event": { "type": "delete_event", "timeMin": "YYYY-MM-DDTHH:mm:ss+08:00", "timeMax": "YYYY-MM-DDTHH:mm:ss+08:00", "query": "..." }
 - For "create_schedule": { "type": "create_schedule", "personName": "..." }
 - For "incomplete" or "unknown": { "type": "...", "originalText": "..." }
 
 # Example:
-- User: "幫我查一下明天下午的會議" -> { "type": "query_event", "timeMin": "2025-09-03T12:00:00+08:00", "timeMax": "2025-09-03T17:00:00+08:00", "query": "會議" }
-- User: "取消明天下午的會議" -> { "type": "delete_event", "timeMin": "2025-09-03T12:00:00+08:00", "timeMax": "2025-09-03T17:00:00+08:00", "query": "會議" }
+- User: "把明天下午3點的會議改到下午4點" -> { "type": "update_event", "timeMin": "2025-09-04T15:00:00+08:00", "timeMax": "2025-09-04T16:00:00+08:00", "query": "會議", "changes": { "start": "2025-09-04T16:00:00+08:00", "end": "2025-09-04T17:00:00+08:00" } }
+- User: "幫我查一下明天下午的會議" -> { "type": "query_event", "timeMin": "2025-09-04T12:00:00+08:00", "timeMax": "2025-09-04T17:00:00+08:00", "query": "會議" }
+- User: "取消明天下午的會議" -> { "type": "delete_event", "timeMin": "2025-09-04T12:00:00+08:00", "timeMax": "2025-09-04T17:00:00+08:00", "query": "會議" }
 - User: "查詢 9/11 的活動" -> { "type": "query_event", "timeMin": "2025-09-11T00:00:00+08:00", "timeMax": "2025-09-11T23:59:59+08:00", "query": "" }
 - User: "幫我刪除 911 的團隊午餐" -> { "type": "delete_event", "timeMin": "2025-09-11T00:00:00+08:00", "timeMax": "2025-09-11T23:59:59+08:00", "query": "團隊午餐" }
 - User: "明天有什麼事" -> { "type": "query_event", "timeMin": "2025-09-03T00:00:00+08:00", "timeMax": "2025-09-03T23:59:59+08:00", "query": "" }
-- User: "明天下午三點跟客戶開會" -> { "type": "create_event", "event": { "title": "跟客戶開會", "start": "2025-09-03T15:00:00+08:00", ... } }
+- User: "明天下午三點跟客戶開會" -> { "type": "create_event", "event": { "title": "跟客戶開會", "start": "2025-09-03T15:00:00+08:00", "end": "2025-09-03T16:00:00+08:00", "allDay": false, "recurrence": null, "reminder": 30, "calendarId": "primary" } }
+- User: "每週一早上9點的站立會議" -> { "type": "create_event", "event": { "title": "站立會議", "start": "2025-09-08T09:00:00+08:00", "end": "2025-09-08T10:00:00+08:00", "allDay": false, "recurrence": "RRULE:FREQ=WEEKLY;BYDAY=MO", "reminder": 30, "calendarId": "primary" } }
+- User: "新增一個每天下午兩點的運動時間" -> { "type": "create_event", "event": { "title": "運動時間", "start": "2025-09-03T14:00:00+08:00", "end": "2025-09-03T15:00:00+08:00", "allDay": false, "recurrence": "RRULE:FREQ=DAILY", "reminder": 30, "calendarId": "primary" } }
+- User: "安排下週二的團隊午餐" -> { "type": "create_event", "event": { "title": "團隊午餐", "start": "2025-09-09T12:00:00+08:00", "end": "2025-09-09T13:00:00+08:00", "allDay": false, "recurrence": null, "reminder": 30, "calendarId": "primary" } }
 `;
 
 export const classifyIntent = async (text: string): Promise<Intent> => {

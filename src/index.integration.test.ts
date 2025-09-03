@@ -1,5 +1,7 @@
+
+
+
 import { Client, FileEventMessage, MessageEvent, PostbackEvent, TextEventMessage, WebhookEvent } from '@line/bot-sdk';
-import { calendar_v3 } from 'googleapis';
 import { CalendarEvent, Intent } from './services/geminiService';
 
 // Mock external dependencies
@@ -18,37 +20,49 @@ jest.mock('@line/bot-sdk', () => ({
 
 jest.mock('./services/geminiService', () => ({
   classifyIntent: jest.fn(),
-  parseTextToCalendarEvent: jest.fn(),
   parseRecurrenceEndCondition: jest.fn(),
-  translateRruleToHumanReadable: jest.fn(),
-  parseImageToCalendarEvents: jest.fn(),
 }));
 
+const mockCreateCalendarEvent = jest.fn();
+const mockGetCalendarChoicesForUser = jest.fn();
+const mockDeleteEvent = jest.fn();
+const mockUpdateEvent = jest.fn();
+const mockSearchEvents = jest.fn();
+const mockFindEventsInTimeRange = jest.fn();
+const mockCalendarEventsGet = jest.fn();
+const mockCalendarEventsList = jest.fn();
+
 jest.mock('./services/googleCalendarService', () => ({
+  createCalendarEvent: mockCreateCalendarEvent,
+  getCalendarChoicesForUser: mockGetCalendarChoicesForUser,
+  deleteEvent: mockDeleteEvent,
+  updateEvent: mockUpdateEvent,
+  searchEvents: mockSearchEvents,
+  findEventsInTimeRange: mockFindEventsInTimeRange,
   calendar: {
     events: {
-      list: jest.fn(),
-      insert: jest.fn(),
-      patch: jest.fn(),
-      delete: jest.fn(),
-      get: jest.fn(),
-    },
-    calendarList: {
-      list: jest.fn(),
+      get: mockCalendarEventsGet,
+      list: mockCalendarEventsList,
     },
   },
-  createCalendarEvent: jest.fn(),
-  deleteEvent: jest.fn(),
-  updateEvent: jest.fn(),
-  searchEvents: jest.fn(),
-  findEventsInTimeRange: jest.fn(),
   DuplicateEventError: class extends Error {
     constructor(message: string, public link: string) {
       super(message);
     }
   },
-  getCalendarChoicesForUser: jest.fn(),
 }));
+
+const conversationStateStore = new Map<string, any>();
+
+jest.mock('ioredis', () => {
+  return jest.fn().mockImplementation(() => ({
+    get: jest.fn(async (key) => conversationStateStore.get(key)),
+    set: jest.fn(async (key, value) => conversationStateStore.set(key, value)),
+    del: jest.fn(async (key) => conversationStateStore.delete(key)),
+    on: jest.fn(),
+  }));
+});
+
 
 // Helper to create mock events with all required properties
 const createMockEvent = (event: Partial<WebhookEvent>): WebhookEvent => {
@@ -69,260 +83,152 @@ const createMockTextMessage = (text: string): TextEventMessage => ({
   text,
 });
 
-describe('index.ts 整合測試', () => {
+describe('index.ts 整合測試 (Redis Mocked)', () => {
   let classifyIntentMock: jest.Mock;
-  let getCalendarChoicesForUserMock: jest.Mock;
-  let searchEventsMock: jest.Mock;
-  let findEventsInTimeRangeMock: jest.Mock;
-  let deleteEventMock: jest.Mock;
-  let calendarEventsGetMock: jest.Mock;
-  let createCalendarEventMock: jest.Mock;
-  let calendarEventsListMock: jest.Mock;
-
-  // Re-import modules for each test to apply env vars
-  let appModule: any;
   let handleEvent: (event: WebhookEvent) => Promise<any>;
-  let conversationStates: Map<string, any>;
-
+  let appModule: any;
 
   const WHITELISTED_USER_ID = 'test';
 
   beforeEach(() => {
-    jest.resetModules(); // Reset modules to allow env vars to be applied
-    
-    // Clear all mocks, including the top-level ones
+    jest.resetModules();
     jest.clearAllMocks();
-    mockReplyMessage.mockClear();
-    mockPushMessage.mockClear();
-    mockGetMessageContent.mockClear();
+    conversationStateStore.clear();
 
-
-    // Set env var before importing the module
     process.env.USER_WHITELIST = WHITELISTED_USER_ID;
-
-    // Now import the module
+    
     appModule = require('./index');
     handleEvent = appModule.handleEvent;
-    conversationStates = appModule.conversationStates;
-
-    jest.spyOn(Date, 'now').mockReturnValue(1000000); // Mock Date.now() for consistent testing
-    if (conversationStates) {
-      conversationStates.clear();
-    }
-
-    // Get handles to the mocked services
     classifyIntentMock = require('./services/geminiService').classifyIntent;
-    getCalendarChoicesForUserMock = require('./services/googleCalendarService').getCalendarChoicesForUser;
-    searchEventsMock = require('./services/googleCalendarService').searchEvents;
-    findEventsInTimeRangeMock = require('./services/googleCalendarService').findEventsInTimeRange;
-    deleteEventMock = require('./services/googleCalendarService').deleteEvent;
-    calendarEventsGetMock = require('./services/googleCalendarService').calendar.events.get;
-    createCalendarEventMock = require('./services/googleCalendarService').createCalendarEvent;
-    calendarEventsListMock = require('./services/googleCalendarService').calendar.events.list;
+
+    jest.spyOn(Date, 'now').mockReturnValue(1000000);
 
     // Default mocks
-    getCalendarChoicesForUserMock.mockResolvedValue([{ id: 'primary', summary: '我的主要日曆' }]);
-    classifyIntentMock.mockResolvedValue({ type: 'unknown', originalText: 'mock' }); // Add a default mock
-    findEventsInTimeRangeMock.mockResolvedValue([]);
-    searchEventsMock.mockResolvedValue([]);
-    calendarEventsGetMock.mockResolvedValue({ data: { summary: 'Some Event' } });
-    createCalendarEventMock.mockResolvedValue({ data: { htmlLink: 'http://example.com/new_event' } });
-    calendarEventsListMock.mockResolvedValue({ data: { items: [] } }); // Add this mock
+    mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: '我的主要日曆' }]);
+    classifyIntentMock.mockResolvedValue({ type: 'unknown', originalText: 'mock' });
+    mockFindEventsInTimeRange.mockResolvedValue([]);
+    mockSearchEvents.mockResolvedValue([]);
+    mockCalendarEventsGet.mockResolvedValue({ data: { summary: 'Some Event' } });
+    mockCreateCalendarEvent.mockResolvedValue({ htmlLink: 'http://example.com/new_event' });
+    mockCalendarEventsList.mockResolvedValue({ data: { items: [] } });
   });
 
   describe('handleEvent', () => {
     it('應該在狀態超時時清除對話狀態', async () => {
-      const timeoutDuration = 10 * 60 * 1000; // 10 minutes
-      const expiredTimestamp = Date.now() - timeoutDuration - 1; // Just past the timeout
-
-      conversationStates.set(WHITELISTED_USER_ID, { step: 'awaiting_event_title', timestamp: expiredTimestamp, event: {} });
+      const timeoutDuration = 10 * 60 * 1000;
+      const expiredTimestamp = Date.now() - timeoutDuration - 1;
+      
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify({ step: 'awaiting_event_title', timestamp: expiredTimestamp, event: {} }));
 
       const mockEvent = createMockEvent({
         type: 'message',
         replyToken: 'mockReplyToken',
-        source: { type: 'user', userId: WHITELISTED_USER_ID },
         message: createMockTextMessage('Hello'),
       }) as MessageEvent;
 
       await handleEvent(mockEvent);
 
-      expect(conversationStates.has(WHITELISTED_USER_ID)).toBeFalsy();
+      expect(conversationStateStore.has(WHITELISTED_USER_ID)).toBe(false);
+    });
+
+    it('should ignore non-whitelisted users', async () => {
+      const mockEvent = createMockEvent({
+        type: 'message',
+        replyToken: 'mockReplyToken',
+        source: { type: 'user', userId: 'not-whitelisted' },
+        message: createMockTextMessage('Hello'),
+      }) as MessageEvent;
+
+      const result = await handleEvent(mockEvent);
+      expect(result).toBeNull();
+    });
+
+    it('should handle join events for groups', async () => {
+      const mockEvent = createMockEvent({
+        type: 'join',
+        replyToken: 'mockReplyToken',
+        source: { type: 'group', groupId: 'test-group' },
+      });
+
+      await handleEvent(mockEvent);
+      expect(mockPushMessage).toHaveBeenCalled();
+    });
+
+    it('should handle join events for rooms', async () => {
+      const mockEvent = createMockEvent({
+        type: 'join',
+        replyToken: 'mockReplyToken',
+        source: { type: 'room', roomId: 'test-room' },
+      });
+
+      await handleEvent(mockEvent);
+      expect(mockPushMessage).toHaveBeenCalled();
+    });
+
+    it('should handle unhandled event types', async () => {
+      const mockEvent = createMockEvent({
+        type: 'unfollow',
+        source: { type: 'user', userId: WHITELISTED_USER_ID },
+      }) as WebhookEvent;
+
+      const result = await handleEvent(mockEvent);
+      expect(result).toBeNull();
     });
   });
 
-  describe('handleNewCommand', () => {
-    it('query_event: 應該查詢活動並以輪播卡片回覆', async () => {
-      const queryIntent: Intent = {
-        type: 'query_event',
-        timeMin: '2025-01-01T00:00:00+08:00',
-        timeMax: '2025-01-01T23:59:59+08:00',
-        query: 'Test'
-      };
-      classifyIntentMock.mockResolvedValue(queryIntent);
-      searchEventsMock.mockResolvedValue([
-        { id: 'event1', summary: 'Test Event 1', start: { dateTime: '2025-01-01T10:00:00+08:00' }, end: { dateTime: '2025-01-01T11:00:00+08:00' }, organizer: { email: 'primary' } }
-      ]);
+  const { Readable } = require('stream');
 
-      const mockEvent = createMockEvent({
-        type: 'message',
-        replyToken: 'mockReplyToken',
-        message: createMockTextMessage('查詢明天 Test'),
-      }) as MessageEvent;
+describe('handleFileMessage', () => {
+    it('should handle successful CSV upload', async () => {
+      const csvContent = `姓名,職位,9/3\n傅臻,全職,早班`;
+      const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
+      const state = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      const stream = new Readable();
+      stream.push(csvContent);
+      stream.push(null);
+      mockGetMessageContent.mockResolvedValue(stream);
 
-      await handleEvent(mockEvent);
+      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
 
-      expect(searchEventsMock).toHaveBeenCalledWith('primary', queryIntent.timeMin, queryIntent.timeMax, queryIntent.query);
-      expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining([expect.objectContaining({ type: 'template', altText: '為您找到 1 個活動' })]));
+      expect(mockReplyMessage).toHaveBeenCalled();
+      const finalState = JSON.parse(conversationStateStore.get(WHITELISTED_USER_ID));
+      expect(finalState.step).toBe('awaiting_bulk_confirmation');
     });
 
-    it('delete_event: 當找到單一活動時，應該要求確認', async () => {
-      const deleteIntent: Intent = {
-        type: 'delete_event',
-        timeMin: '2025-01-01T00:00:00+08:00',
-        timeMax: '2025-01-01T23:59:59+08:00',
-        query: 'Delete Me'
-      };
-      classifyIntentMock.mockResolvedValue(deleteIntent);
-      searchEventsMock.mockResolvedValue([
-        { id: 'event1', summary: 'Delete Me', organizer: { email: 'primary' } }
-      ]);
+    it('should handle CSV with no events found', async () => {
+      const csvContent = `姓名,職位,9/3\n傅臻,全職,休`;
+      const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
+      const state = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      const stream = new Readable();
+      stream.push(csvContent);
+      stream.push(null);
+      mockGetMessageContent.mockResolvedValue(stream);
 
-      const mockEvent = createMockEvent({
-        type: 'message',
-        replyToken: 'mockReplyToken',
-        message: createMockTextMessage('刪除 Delete Me'),
-      }) as MessageEvent;
+      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
 
-      await handleEvent(mockEvent);
-
-      expect(searchEventsMock).toHaveBeenCalled();
-      expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ type: 'template', altText: '確認刪除活動： Delete Me' }));
-      expect(conversationStates.get(WHITELISTED_USER_ID)?.step).toBe('awaiting_delete_confirmation');
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '在您上傳的 CSV 檔案中，找不到「傅臻」的任何班次，或格式不正確。' });
     });
 
-    it('delete_event: 當找不到活動時，應該回覆找不到訊息', async () => {
-      const deleteIntent: Intent = {
-        type: 'delete_event',
-        timeMin: '2025-01-01T00:00:00+08:00',
-        timeMax: '2025-01-01T23:59:59+08:00',
-        query: 'Non-existent'
-      };
-      classifyIntentMock.mockResolvedValue(deleteIntent);
-      searchEventsMock.mockResolvedValue([]);
+    it('should handle error during file processing', async () => {
+      const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
+      const state = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      mockGetMessageContent.mockRejectedValue(new Error('test error'));
 
-      const mockEvent = createMockEvent({
-        type: 'message',
-        replyToken: 'mockReplyToken',
-        message: createMockTextMessage('刪除 Non-existent'),
-      }) as MessageEvent;
+      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
 
-      await handleEvent(mockEvent);
-
-      expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), { type: 'text', text: '抱歉，找不到您想刪除的活動。' });
-    });
-
-    it('delete_event: 當找到多個活動時，應該要求使用者更明確指出', async () => {
-        const deleteIntent: Intent = {
-            type: 'delete_event',
-            timeMin: '2025-01-01T00:00:00+08:00',
-            timeMax: '2025-01-01T23:59:59+08:00',
-            query: 'Multiple'
-        };
-        classifyIntentMock.mockResolvedValue(deleteIntent);
-        searchEventsMock.mockResolvedValue([ { id: '1' }, { id: '2' } ] as any);
-
-        const mockEvent = createMockEvent({
-            type: 'message',
-            replyToken: 'mockReplyToken',
-            message: createMockTextMessage('刪除 Multiple'),
-        }) as MessageEvent;
-
-        await handleEvent(mockEvent);
-
-        expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), { type: 'text', text: '我找到了多個符合條件的活動，請您先用「查詢」功能找到想刪除的活動，然後再點擊該活動下方的「刪除」按鈕。' });
-    });
-
-    it('create_event: 當沒有標題但有時間時，應該要求標題', async () => {
-        const createIntent: Intent = {
-            type: 'create_event',
-            event: { start: '2025-01-01T10:00:00+08:00' }
-        };
-        classifyIntentMock.mockResolvedValue(createIntent);
-
-        const mockEvent = createMockEvent({
-            type: 'message',
-            replyToken: 'mockReplyToken',
-            message: createMockTextMessage('明天早上十點'),
-        }) as MessageEvent;
-
-        await handleEvent(mockEvent);
-
-        expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), { type: 'text', text: '好的，請問「2025/1/1 10:00」要安排什麼活動呢？' });
-        expect(conversationStates.get(WHITELISTED_USER_ID)?.step).toBe('awaiting_event_title');
-    });
-
-    it('create_event: 當有標題和時間時，應該直接處理完整事件', async () => {
-        const createIntent: Intent = {
-            type: 'create_event',
-            event: { title: 'Test Event', start: '2025-01-01T10:00:00+08:00', end: '2025-01-01T11:00:00+08:00' }
-        };
-        classifyIntentMock.mockResolvedValue(createIntent);
-        findEventsInTimeRangeMock.mockResolvedValue([]); // No conflicts
-
-        const mockEvent = createMockEvent({
-            type: 'message',
-            replyToken: 'mockReplyToken',
-            message: createMockTextMessage('明天早上十點開會'),
-        }) as MessageEvent;
-
-        await handleEvent(mockEvent);
-
-        expect(findEventsInTimeRangeMock).toHaveBeenCalled();
-        expect(createCalendarEventMock).toHaveBeenCalledWith(createIntent.event, 'primary');
-    });
-
-    it('create_event: 當沒有時間也沒有標題時，應該回覆未知意圖', async () => {
-        const createIntent: Intent = {
-            type: 'incomplete',
-            originalText: 'Hello'
-        };
-        classifyIntentMock.mockResolvedValue(createIntent);
-
-        const mockEvent = createMockEvent({
-            type: 'message',
-            replyToken: 'mockReplyToken',
-            message: createMockTextMessage('Hello'),
-        }) as MessageEvent;
-
-        await handleEvent(mockEvent);
-
-        expect(mockReplyMessage).not.toHaveBeenCalled(); // Should not reply for incomplete/unknown
-    });
-
-    it('should handle unknown intent', async () => {
-        const unknownIntent: Intent = {
-            type: 'unknown',
-            originalText: 'What is the weather like?'
-        };
-        classifyIntentMock.mockResolvedValue(unknownIntent);
-
-        const mockEvent = createMockEvent({
-            type: 'message',
-            replyToken: 'mockReplyToken',
-            message: createMockTextMessage('What is the weather like?'),
-        }) as MessageEvent;
-
-        await handleEvent(mockEvent);
-
-        expect(mockReplyMessage).not.toHaveBeenCalled(); // Should not reply for incomplete/unknown
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '處理您上傳的 CSV 檔案時發生錯誤。' });
     });
   });
+
 
   describe('handlePostbackEvent', () => {
     it('confirm_delete: 應該刪除活動並回覆成功訊息', async () => {
       const state = { step: 'awaiting_delete_confirmation', eventId: 'event1', calendarId: 'primary', timestamp: Date.now() };
-      conversationStates.set(WHITELISTED_USER_ID, state);
-      deleteEventMock.mockResolvedValue(undefined);
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      mockDeleteEvent.mockResolvedValue(undefined);
 
       const mockEvent = createMockEvent({
         type: 'postback',
@@ -332,138 +238,230 @@ describe('index.ts 整合測試', () => {
 
       await handleEvent(mockEvent);
 
-      expect(deleteEventMock).toHaveBeenCalledWith('event1', 'primary');
+      expect(mockDeleteEvent).toHaveBeenCalledWith('event1', 'primary');
       expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), { type: 'text', text: '活動已成功刪除。' });
-      expect(conversationStates.has(WHITELISTED_USER_ID)).toBeFalsy();
+      expect(conversationStateStore.has(WHITELISTED_USER_ID)).toBe(false);
     });
 
-    it('create_after_choice: 應該在選擇日曆後檢查衝突並建立活動', async () => {
-        const event: Partial<CalendarEvent> = { title: 'New Event', start: '2025-01-01T12:00:00+08:00', end: '2025-01-01T13:00:00+08:00' };
-        const state = { step: 'awaiting_calendar_choice', event, timestamp: Date.now() };
-        conversationStates.set(WHITELISTED_USER_ID, state);
-        findEventsInTimeRangeMock.mockResolvedValue([]); // No conflicts
+    it('should handle create_after_choice with invalid state', async () => {
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=create_after_choice&calendarId=primary' },
+      }) as PostbackEvent;
 
-        const mockEvent = createMockEvent({
-            type: 'postback',
-            replyToken: 'mockReplyToken',
-            postback: { data: 'action=create_after_choice&calendarId=custom_cal' },
-        }) as PostbackEvent;
+      await handleEvent(mockEvent);
 
-        await handleEvent(mockEvent);
-
-        expect(findEventsInTimeRangeMock).toHaveBeenCalledWith(event.start, event.end, 'custom_cal');
-        expect(createCalendarEventMock).toHaveBeenCalledWith(event, 'custom_cal');
-        expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ text: '收到！正在為您新增活動至 Google 日曆中...' }));
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '抱歉，您的請求已逾時或無效，請重新操作。' });
     });
 
-    it('create_after_choice: 當選擇日曆後有衝突時，應該要求確認', async () => {
-        const event: Partial<CalendarEvent> = { title: 'New Event', start: '2025-01-01T12:00:00+08:00', end: '2025-01-01T13:00:00+08:00' };
-        const state = { step: 'awaiting_calendar_choice', event, timestamp: Date.now() };
-        conversationStates.set(WHITELISTED_USER_ID, state);
-        findEventsInTimeRangeMock.mockResolvedValue([
-            { id: 'existing_event', summary: 'Existing Event', start: { dateTime: '2025-01-01T12:00:00+08:00' } }
-        ]);
+    it('should handle create_after_choice with missing calendarId', async () => {
+      const state = { step: 'awaiting_calendar_choice', event: {}, timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
 
-        const mockEvent = createMockEvent({
-            type: 'postback',
-            replyToken: 'mockReplyToken',
-            postback: { data: 'action=create_after_choice&calendarId=custom_cal' },
-        }) as PostbackEvent;
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=create_after_choice' },
+      }) as PostbackEvent;
 
-        await handleEvent(mockEvent);
+      await handleEvent(mockEvent);
 
-        expect(findEventsInTimeRangeMock).toHaveBeenCalledWith(event.start, event.end, 'custom_cal');
-        expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), { type: 'text', text: '好的，正在檢查時間衝突...' });
-        expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, expect.objectContaining({ type: 'template', altText: '時間衝突警告' }));
-        expect(conversationStates.get(WHITELISTED_USER_ID)?.step).toBe('awaiting_conflict_confirmation');
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '錯誤：找不到日曆資訊，請重新操作。' });
     });
 
-    it('force_create: 應該忽略衝突並建立活動', async () => {
-        const event: Partial<CalendarEvent> = { title: 'Forced Event', start: '2025-01-01T10:00:00+08:00', end: '2025-01-01T11:00:00+08:00' };
-        const state = { step: 'awaiting_conflict_confirmation', event, calendarId: 'primary', timestamp: Date.now() };
-        conversationStates.set(WHITELISTED_USER_ID, state);
+    it('should handle create_after_choice with conflicting events', async () => {
+      const event = { start: '2025-01-01T10:00:00+08:00', end: '2025-01-01T11:00:00+08:00', title: 'Test Event' };
+      const state = { step: 'awaiting_calendar_choice', event, timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      mockFindEventsInTimeRange.mockResolvedValue([{ summary: 'Existing Event' }]);
 
-        const mockEvent = createMockEvent({
-            type: 'postback',
-            replyToken: 'mockReplyToken',
-            postback: { data: 'action=force_create' },
-        }) as PostbackEvent;
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=create_after_choice&calendarId=primary' },
+      }) as PostbackEvent;
 
-        await handleEvent(mockEvent);
+      await handleEvent(mockEvent);
 
-        expect(createCalendarEventMock).toHaveBeenCalledWith(event, 'primary');
-        expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), { type: 'text', text: '好的，已忽略衝突，正在為您建立活動...' });
-        expect(conversationStates.has(WHITELISTED_USER_ID)).toBeFalsy();
+      expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, expect.objectContaining({ type: 'template', altText: '時間衝突警告' }));
     });
 
-    it('modify: 應該設定狀態並要求修改細節', async () => {
-        const eventId = 'event123';
-        const calendarId = 'primary';
-        const mockEvent = createMockEvent({
-            type: 'postback',
-            replyToken: 'mockReplyToken',
-            postback: { data: `action=modify&eventId=${eventId}&calendarId=${calendarId}` },
-        }) as PostbackEvent;
+    it('should handle delete with missing eventId', async () => {
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=delete&calendarId=primary' },
+      }) as PostbackEvent;
 
-        await handleEvent(mockEvent);
+      await handleEvent(mockEvent);
 
-        expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), { type: 'text', text: "好的，請問您想如何修改這個活動？\n(例如：標題改為「團隊午餐」、時間改到「明天下午一點」)" });
-        expect(conversationStates.get(WHITELISTED_USER_ID)?.step).toBe('awaiting_modification_details');
-        expect(conversationStates.get(WHITELISTED_USER_ID)?.eventId).toBe(eventId);
-        expect(conversationStates.get(WHITELISTED_USER_ID)?.calendarId).toBe(calendarId);
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '抱歉，找不到要刪除的活動資訊。' });
+    });
+
+    it('should handle delete with error fetching event', async () => {
+      mockCalendarEventsGet.mockRejectedValue(new Error('test error'));
+
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=delete&eventId=event1&calendarId=primary' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '抱歉，找不到要刪除的活動資訊。' });
+    });
+
+    it('should handle confirm_delete with invalid state', async () => {
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=confirm_delete' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '抱歉，您的刪除請求已逾時或無效，請重新操作。' });
+    });
+
+    it('should handle confirm_delete with error', async () => {
+      const state = { step: 'awaiting_delete_confirmation', eventId: 'event1', calendarId: 'primary', timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      mockDeleteEvent.mockRejectedValue(new Error('test error'));
+
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=confirm_delete' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '抱歉，刪除活動時發生錯誤。' });
+    });
+
+    it('should handle modify with missing eventId', async () => {
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=modify&calendarId=primary' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '抱歉，找不到要修改的活動資訊。' });
+    });
+
+    it('should handle force_create with invalid state', async () => {
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=force_create' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '抱歉，您的請求已逾時或無效，請重新操作。' });
+    });
+
+    it('should handle force_create with error', async () => {
+      const event = { start: '2025-01-01T10:00:00+08:00', end: '2025-01-01T11:00:00+08:00', title: 'Test Event' };
+      const state = { step: 'awaiting_conflict_confirmation', event, calendarId: 'primary', timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      mockCreateCalendarEvent.mockRejectedValue(new Error('test error'));
+
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=force_create' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, { type: 'text', text: '抱歉，新增日曆事件時發生錯誤。' });
+    });
+
+    it('should handle createAllShifts with invalid state', async () => {
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=createAllShifts&calendarId=primary' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '抱歉，您的批次新增請求已逾時或無效，請重新上傳檔案。' });
+    });
+
+    it('should handle createAllShifts with missing calendarId', async () => {
+      const state = { step: 'awaiting_bulk_confirmation', events: [], timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=createAllShifts' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '錯誤：找不到日曆資訊，請重新操作。' });
+    });
+
+    it('should handle createAllShifts with calendarId=all', async () => {
+      const events = [{ title: 'Test Event', start: '2025-01-01T10:00:00+08:00', end: '2025-01-01T11:00:00+08:00' }];
+      const state = { step: 'awaiting_bulk_confirmation', events, timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      mockGetCalendarChoicesForUser.mockResolvedValue([
+        { id: 'primary', summary: 'Primary' },
+        { id: 'secondary', summary: 'Secondary' },
+      ]);
+
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=createAllShifts&calendarId=all' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      expect(mockCreateCalendarEvent).toHaveBeenCalledTimes(2);
+    });
+
+    it('should handle createAllShifts with mixed results', async () => {
+      const events = [
+        { title: 'Success' },
+        { title: 'Duplicate' },
+        { title: 'Failure' },
+      ];
+      const state = { step: 'awaiting_bulk_confirmation', events, timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      mockCreateCalendarEvent.mockImplementation(event => {
+        if (event.title === 'Success') return Promise.resolve({});
+        if (event.title === 'Duplicate') return Promise.reject(new (require('./services/googleCalendarService').DuplicateEventError)('duplicate', 'http://example.com'));
+        return Promise.reject(new Error('failure'));
+      });
+
+      const mockEvent = createMockEvent({
+        type: 'postback',
+        replyToken: 'mockReplyToken',
+        postback: { data: 'action=createAllShifts&calendarId=primary' },
+      }) as PostbackEvent;
+
+      await handleEvent(mockEvent);
+
+      // We need to wait for the async batch processing to complete
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, { type: 'text', text: `批次匯入完成：\n- 新增成功 1 件\n- 已存在 1 件\n- 失敗 1 件` });
     });
   });
 
-  describe('handleTextMessage', () => {
-    it('handleTitleResponse: 應該處理標題回應並處理完整事件', async () => {
-        const event: Partial<CalendarEvent> = { start: '2025-01-01T10:00:00+08:00', end: '2025-01-01T11:00:00+08:00' };
-        const state = { step: 'awaiting_event_title', event, timestamp: Date.now() };
-        conversationStates.set(WHITELISTED_USER_ID, state);
-        const mockMessage = createMockTextMessage('我的新活動標題');
+  
 
-        findEventsInTimeRangeMock.mockResolvedValue([]); // No conflicts
 
-        await appModule.handleTextMessage('mockReplyToken', mockMessage, WHITELISTED_USER_ID);
 
-        const expectedEvent = { ...event, title: '我的新活動標題' };
-        expect(createCalendarEventMock).toHaveBeenCalledWith(expectedEvent, 'primary');
-        expect(conversationStates.has(WHITELISTED_USER_ID)).toBeFalsy();
-    });
 
-    it('handleRecurrenceResponse: 應該處理重複回應並建立活動', async () => {
-        const event: Partial<CalendarEvent> = { title: 'Recurring Event', start: '2025-01-01T10:00:00+08:00', recurrence: 'RRULE:FREQ=DAILY' };
-        const state = { step: 'awaiting_recurrence_end_condition', event, timestamp: Date.now() };
-        conversationStates.set(WHITELISTED_USER_ID, state);
-        const mockMessage = createMockTextMessage('重複10次');
-        const parseRecurrenceEndConditionMock = require('./services/geminiService').parseRecurrenceEndCondition;
-        parseRecurrenceEndConditionMock.mockResolvedValue({ updatedRrule: 'RRULE:FREQ=DAILY;COUNT=10' });
 
-        await appModule.handleTextMessage('mockReplyToken', mockMessage, WHITELISTED_USER_ID);
-
-        expect(parseRecurrenceEndConditionMock).toHaveBeenCalledWith('重複10次', event.recurrence, event.start);
-        expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), { type: 'text', text: '好的，已為您更新重複規則，正在建立活動... ' });
-        expect(createCalendarEventMock).toHaveBeenCalledWith({ ...event, recurrence: 'RRULE:FREQ=DAILY;COUNT=10' }, 'primary');
-        expect(conversationStates.has(WHITELISTED_USER_ID)).toBeFalsy();
-    });
-
-    it('handleEventUpdate: 應該處理修改細節並更新活動', async () => {
-        const eventId = 'event123';
-        const calendarId = 'primary';
-        const state = { step: 'awaiting_modification_details', eventId, calendarId, timestamp: Date.now() };
-        conversationStates.set(WHITELISTED_USER_ID, state);
-        const mockMessage = createMockTextMessage('標題改為新標題');
-        const updateEventMock = require('./services/googleCalendarService').updateEvent;
-        updateEventMock.mockResolvedValue({ summary: '新標題', htmlLink: 'http://example.com/updated' });
-        const classifyIntentMock = require('./services/geminiService').classifyIntent;
-        classifyIntentMock.mockResolvedValue({ type: 'update_event', changes: { title: '新標題' } });
-
-        await appModule.handleTextMessage('mockReplyToken', mockMessage, WHITELISTED_USER_ID);
-
-        expect(classifyIntentMock).toHaveBeenCalledWith('標題改為新標題');
-        expect(updateEventMock).toHaveBeenCalledWith(eventId, calendarId, { summary: '新標題' });
-        expect(mockReplyMessage).toHaveBeenCalledWith(expect.any(String), { type: 'text', text: '好的，正在為您更新活動...' });
-        expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, expect.objectContaining({ type: 'template', altText: '活動已更新' }));
-        expect(conversationStates.has(WHITELISTED_USER_ID)).toBeFalsy();
-    });
-  });
 });

@@ -135,6 +135,7 @@ LINE_CHANNEL_ACCESS_TOKEN=【貼上您的 Channel Access Token】
 
 # Google Gemini API
 GEMINI_API_KEY=【貼上您的 Gemini API 金鑰】
+GEMINI_MODEL=gemini-2.5-flash
 
 # Google Calendar API
 GOOGLE_CLIENT_ID=【貼上您的 Client ID】
@@ -149,4 +150,9 @@ TARGET_CALENDAR_NAME=家庭
 # Security
 # Comma-separated list of allowed LINE User IDs
 USER_WHITELIST=【貼上您的 LINE User ID】
+
+# Redis
+# Redis 連線字串。用於儲存 Bot 的對話狀態，以支援多輪對話。
+# 通常由 Redis 服務提供商提供 (例如 Redis Cloud, Upstash)，或指向本地 Redis 實例。
+REDIS_URL=【貼上您的 Redis 連線字串】
 ```

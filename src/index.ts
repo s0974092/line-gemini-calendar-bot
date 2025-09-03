@@ -21,6 +21,7 @@ import {
   Intent,
   CalendarEvent,
   parseRecurrenceEndCondition,
+  parseEventChanges,
 } from './services/geminiService';
 import { 
   calendar, 
@@ -34,6 +35,7 @@ import {
   deleteEvent,
 } from './services/googleCalendarService';
 import { Stream } from 'stream';
+import Redis from 'ioredis'; // Import Redis
 
 // --- 1. 設定 ---
 if (!process.env.LINE_CHANNEL_SECRET || !process.env.LINE_CHANNEL_ACCESS_TOKEN) {
@@ -56,7 +58,30 @@ interface ConversationState {
   eventId?: string; // 用於修改/刪除
   calendarId?: string; // 用於修改/刪除
 }
-const conversationStates = new Map<string, ConversationState>();
+
+// 使用 Redis 儲存對話狀態
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+
+redis.on('error', (err) => {
+  console.error('Redis Error:', err);
+});
+
+// 輔助函式：從 Redis 取得對話狀態
+async function getConversationState(userId: string): Promise<ConversationState | undefined> {
+  const stateJson = await redis.get(userId);
+  return stateJson ? JSON.parse(stateJson) : undefined;
+}
+
+// 輔助函式：設定對話狀態到 Redis (設定 1 小時過期)
+async function setConversationState(userId: string, state: ConversationState): Promise<void> {
+  await redis.set(userId, JSON.stringify(state), 'EX', 3600);
+}
+
+// 輔助函式：從 Redis 清除對話狀態
+async function clearConversationState(userId: string): Promise<void> {
+  await redis.del(userId);
+}
+
 
 // --- 3. Express 應用程式設定 ---
 const app = express();
@@ -92,10 +117,10 @@ const handleEvent = async (event: WebhookEvent) => {
   }
 
   // 通用狀態超時檢查
-  const currentState = conversationStates.get(userId!);
+  const currentState = await getConversationState(userId!);
   if (currentState && (Date.now() - currentState.timestamp > 10 * 60 * 1000)) { // 10 分鐘超時
     console.log(`State for user ${userId!} has expired.`);
-    conversationStates.delete(userId!);
+    await clearConversationState(userId!);
   }
 
   switch (event.type) {
@@ -117,23 +142,16 @@ const handleEvent = async (event: WebhookEvent) => {
 您可以這樣對我說：
 
 🗓️ 新增活動：
-*   \`明天早上9點開會\`
-*   \`9月15號下午三點跟John面試\`
-*   \`每週一早上9點的站立會議\` (會追問結束條件)
+*   \n明天早上9點開會\n*   \n9月15號下午三點跟John面試\n*   \n每週一早上9點的站立會議\n (會追問結束條件)
 
 🔍 查詢活動：
-*   \`明天有什麼事\`
-*   \`下週有什麼活動\`
-*   \`我什麼時候要跟John面試\`
-
+*   \n明天有什麼事\n*   \n下週有什麼活動\n*   \n我什麼時候要跟John面試\n
 ✏️ 修改活動：
-*   \`把明天下午3點的會議改到下午4點\`
-
+*   \n把明天下午3點的會議改到下午4點\n
 🗑️ 刪除活動：
-*   \`取消明天下午3點的會議\`
-
+*   \n取消明天下午3點的會議\n
 📊 班表建立 (CSV 專屬！)：
-*   想整理班表？請先說\`幫我建立[人名]的班表\`，再傳 **CSV 格式**檔案。我的火眼金睛只認 CSV，圖片還在學！
+*   想整理班表？請先說\n幫我建立[人名]的班表\n，再傳 **CSV 格式**檔案。我的火眼金睛只認 CSV，圖片還在學！
 
 請盡量使用自然語言描述您的需求，我會盡力理解！`;
 
@@ -177,7 +195,7 @@ const streamToString = (stream: Stream): Promise<string> => {
 };
 
 const handleFileMessage = async (replyToken: string, message: FileEventMessage, userId: string) => {
-  const currentState = conversationStates.get(userId);
+  const currentState = await getConversationState(userId);
 
   if (!currentState || currentState.step !== 'awaiting_csv_upload' || !currentState.personName) {
     return lineClient.replyMessage(replyToken, { type: 'text', text: '感謝您傳送檔案，但我不知道該如何處理它。如果您想建立班表，請先傳送「幫 [姓名] 建立班表」。' });
@@ -195,7 +213,7 @@ const handleFileMessage = async (replyToken: string, message: FileEventMessage, 
     const csvContent = await streamToString(fileContentStream);
     const events = parseCsvToEvents(csvContent, personName);
 
-    conversationStates.delete(userId);
+    await clearConversationState(userId);
 
     if (events.length === 0) {
       return lineClient.replyMessage(replyToken, { type: 'text', text: `在您上傳的 CSV 檔案中，找不到「${personName}」的任何班次，或格式不正確。` });
@@ -215,12 +233,9 @@ const handleFileMessage = async (replyToken: string, message: FileEventMessage, 
       text: `已為「${personName}」解析出以下 ${events.length} 個班次，請確認：\n\n${eventListText}`
     };
 
-    conversationStates.set(userId, { step: 'awaiting_bulk_confirmation', events, timestamp: Date.now() });
-
+    await setConversationState(userId, { step: 'awaiting_bulk_confirmation', events, timestamp: Date.now() });
     const calendarChoices = await getCalendarChoicesForUser();
-
     let confirmationTemplate: TemplateMessage;
-
     if (calendarChoices.length <= 1) {
       const summaryText = `您要將這 ${events.length} 個活動一次全部新增至您的 Google 日曆嗎？`;
       confirmationTemplate = {
@@ -264,7 +279,7 @@ const handleFileMessage = async (replyToken: string, message: FileEventMessage, 
 
   } catch (error) {
     console.error('Error processing uploaded CSV file:', error);
-    conversationStates.delete(userId); // 發生錯誤時清除狀態
+    await clearConversationState(userId); // 發生錯誤時清除狀態
     return lineClient.replyMessage(replyToken, { type: 'text', text: '處理您上傳的 CSV 檔案時發生錯誤。' });
   }
 };
@@ -276,7 +291,6 @@ export const parseCsvToEvents = (csvContent: string, personName: string): Calend
   }
 
   let lines = csvContent.trim().split(/\r?\n/); // 處理 \n 和 \r\n 兩種換行符
-
   // 尋找實際的標頭列，假設它以「姓名」開頭
   const headerRowIndex = lines.findIndex(line => line.startsWith('"姓名"') || line.startsWith('姓名'));
   
@@ -290,7 +304,6 @@ export const parseCsvToEvents = (csvContent: string, personName: string): Calend
 
   const events: CalendarEvent[] = [];
   if (lines.length < 2) return []; // 資料不足
-
   const header = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
   const dateHeaders = header.slice(2);
 
@@ -318,7 +331,6 @@ export const parseCsvToEvents = (csvContent: string, personName: string): Calend
   const shiftData = rowData.slice(2);
 
   const year = new Date().getFullYear(); // 假設為當前年份
-
   dateHeaders.forEach((dateStr, index) => {
     const shift = shiftData[index];
     if (!shift || shift === '假' || shift === '休') return;
@@ -347,7 +359,6 @@ export const parseCsvToEvents = (csvContent: string, personName: string): Calend
         // 如果不是描述性班次，請嘗試匹配時間模式
         const timeMatch = shift.match(/(\d{1,2})(\d{2})?-(\d{1,2})(\d{2})?/);
         if (!timeMatch) return; // 如果不匹配，則跳過此班次
-
         startHour = timeMatch[1].padStart(2, '0');
         startMinute = timeMatch[2] || '00';
         endHour = timeMatch[3].padStart(2, '0');
@@ -379,14 +390,14 @@ export const parseCsvToEvents = (csvContent: string, personName: string): Calend
 
 // --- 5b. 文字訊息處理器 (新流程) ---
 const handleTextMessage = async (replyToken: string, message: TextEventMessage, userId: string) => {
-  const currentState = conversationStates.get(userId);
+  const currentState = await getConversationState(userId);
 
   // --- 新增班表分析觸發器 ---
   const nameMatch = message.text.match(/幫(?:「|『)?(.+?)(?:」|『)?建立班表/);
   if (nameMatch) {
     const personName = nameMatch[1].trim();
     console.log(`Request to create schedule for "${personName}". Awaiting CSV file.`);
-    conversationStates.set(userId, {
+    await setConversationState(userId, {
       step: 'awaiting_csv_upload',
       personName: personName, 
       timestamp: Date.now() 
@@ -431,7 +442,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
       }
 
       if (!event.title && event.start) {
-        conversationStates.set(userId, { step: 'awaiting_event_title', event, timestamp: Date.now() });
+        await setConversationState(userId, { step: 'awaiting_event_title', event, timestamp: Date.now() });
         const timeDetails = new Date(event.start).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short', hour12: false, timeZone: 'Asia/Taipei' });
         return lineClient.replyMessage(replyToken, { type: 'text', text: `好的，請問「${timeDetails}」要安排什麼活動呢？` });
       }
@@ -442,13 +453,11 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
       
       const calendarChoicesQuery = await getCalendarChoicesForUser();
       const allCalendarIdsQuery = calendarChoicesQuery.map(c => c.id!);
-
       const searchPromises = allCalendarIdsQuery.map(calId => 
         searchEvents(calId, intent.timeMin, intent.timeMax, intent.query)
       );
       const searchResults = await Promise.all(searchPromises);
       const foundEvents = searchResults.flat();
-
       // Sort events by start time
       foundEvents.sort((a, b) => {
         const timeA = new Date(a.start?.dateTime || a.start?.date || 0).getTime();
@@ -457,6 +466,71 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
       });
 
       return handleQueryResults(replyToken, intent.query, foundEvents);
+
+    case 'update_event':
+      console.log(`Handling update_event with query: "${intent.query}" from ${intent.timeMin} to ${intent.timeMax}`);
+      
+      // 1. Find the event to update
+      const calendarChoicesUpdate = await getCalendarChoicesForUser();
+      const allCalendarIdsUpdate = calendarChoicesUpdate.map(c => c.id!);
+      
+      const updateSearchPromises = allCalendarIdsUpdate.map(calId => 
+        searchEvents(calId, intent.timeMin, intent.timeMax, intent.query)
+      );
+      const eventsToUpdate = (await Promise.all(updateSearchPromises)).flat();
+
+      // 2. Handle different scenarios
+      if (eventsToUpdate.length === 0) {
+        return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，找不到您想修改的活動。' });
+      }
+
+      if (eventsToUpdate.length > 1) {
+        return lineClient.replyMessage(replyToken, { type: 'text', text: '我找到了多個符合條件的活動，請您先用「查詢」功能找到想修改的活動，然後再點擊該活動下方的「修改」按鈕。' });
+      }
+
+      // 3. Proceed with the update if exactly one event is found
+      const eventToUpdate = eventsToUpdate[0];
+      const eventId = eventToUpdate.id!;
+      const calendarId = eventToUpdate.organizer!.email!;
+      
+      try {
+        const eventPatch: calendar_v3.Schema$Event = {};
+        const changes = intent.changes;
+
+        if (changes.title) {
+          eventPatch.summary = changes.title;
+        }
+        if (changes.start) {
+          eventPatch.start = { dateTime: changes.start, timeZone: 'Asia/Taipei' };
+        }
+        if (changes.end) {
+          eventPatch.end = { dateTime: changes.end, timeZone: 'Asia/Taipei' };
+        }
+        
+        const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
+
+        await lineClient.replyMessage(replyToken, { type: 'text', text: '好的，正在為您更新活動...' });
+
+        const confirmationMessage: TemplateMessage = {
+          type: 'template',
+          altText: '活動已更新',
+          template: {
+            type: 'buttons',
+            title: `✅ 活動已更新`,
+            text: `「${updatedEvent.summary}」已更新。`,
+            actions: [{
+              type: 'uri',
+              label: '在 Google 日曆中查看',
+              uri: updatedEvent.htmlLink!
+            }]
+          }
+        };
+        return lineClient.pushMessage(userId, confirmationMessage);
+
+      } catch (error) {
+        console.error('Error updating event directly:', error);
+        return lineClient.pushMessage(userId, { type: 'text', text: '抱歉，更新活動時發生錯誤。' });
+      }
 
     case 'delete_event':
       console.log(`Handling delete_event with query: "${intent.query}" from ${intent.timeMin} to ${intent.timeMax}`);
@@ -477,7 +551,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
         const eventId = event.id!;
         const calendarId = event.organizer!.email!;
         
-        conversationStates.set(userId, {
+        await setConversationState(userId, {
           step: 'awaiting_delete_confirmation',
           eventId: eventId,
           calendarId: calendarId,
@@ -505,7 +579,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
     case 'create_schedule':
       // This is handled by a separate trigger in handleTextMessage, but we keep it here for completeness.
       console.log(`Request to create schedule for "${intent.personName}". Awaiting CSV file.`);
-      conversationStates.set(userId, {
+      await setConversationState(userId, {
         step: 'awaiting_csv_upload',
         personName: intent.personName,
         timestamp: Date.now()
@@ -521,7 +595,6 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
       // We can choose to either ignore it or ask for clarification.
       // For now, we'll just log it and do nothing, to avoid being too noisy.
       return null;
-
     default:
       console.log(`Unhandled intent type: ${(intent as any).type}`);
       return null;
@@ -557,7 +630,6 @@ const handleQueryResults = async (replyToken: string, query: string, events: cal
     const calendarName = calendarId ? calendarNameMap.get(calendarId) || calendarId : '未知日曆';
 
     const textWithCalendar = `日曆：${calendarName}\n${timeInfo}`;
-
     const actions: Action[] = [];
     if (event.id && calendarId) {
         actions.push({ type: 'postback', label: '修改活動', data: `action=modify&eventId=${event.id}&calendarId=${calendarId}` });
@@ -568,14 +640,12 @@ const handleQueryResults = async (replyToken: string, query: string, events: cal
         actions.push({ type: 'uri', label: '在日曆中查看', uri: event.htmlLink });
     }
 
-
     return {
       title: title.substring(0, 40),
       text: textWithCalendar.substring(0, 60),
       actions: actions,
     };
   });
-
 
   const carouselTemplate: TemplateMessage = {
     type: 'template',
@@ -589,7 +659,6 @@ const handleQueryResults = async (replyToken: string, query: string, events: cal
   const replyText = query
     ? `為您找到 ${events.length} 個與「${query}」相關的活動：`
     : `為您找到 ${events.length} 個活動：`;
-
   return lineClient.replyMessage(replyToken, [
     { type: 'text', text: replyText },
     carouselTemplate
@@ -599,7 +668,7 @@ const handleQueryResults = async (replyToken: string, query: string, events: cal
 // --- 5e. 處理標題回應 ---
 const handleTitleResponse = async (replyToken: string, message: TextEventMessage, userId: string, currentState: ConversationState) => {
   const completeEvent = { ...currentState.event, title: message.text } as CalendarEvent;
-  conversationStates.delete(userId);
+  await clearConversationState(userId);
   return processCompleteEvent(replyToken, completeEvent, userId);
 };
 
@@ -610,18 +679,19 @@ const handleRecurrenceResponse = async (replyToken: string, message: TextEventMe
 
   if ('error' in recurrenceResult) {
     currentState.timestamp = Date.now();
-    conversationStates.set(userId, currentState);
+    await setConversationState(userId, currentState);
     return lineClient.replyMessage(replyToken, { type: 'text', text: `抱歉，我不太理解您的意思。請問您希望這個重複活動什麼時候結束？\n(例如: 直到年底、重複10次、或直到 2025/12/31)` });
   }
 
   try {
-    await lineClient.replyMessage(replyToken, { type: 'text', text: '好的，已為您更新重複規則，正在建立活動... ' });
-    const fullEvent: CalendarEvent = { ...originalEvent, recurrence: recurrenceResult.updatedRrule };
-    const createdEvent = await createCalendarEvent(fullEvent, fullEvent.calendarId || 'primary');
-    conversationStates.delete(userId);
-    return sendCreationConfirmation(userId, fullEvent, createdEvent);
+    // Update the event in the current state with the new recurrence
+    const updatedEvent = { ...originalEvent, recurrence: recurrenceResult.updatedRrule };
+    await setConversationState(userId, { ...currentState, event: updatedEvent, timestamp: Date.now() }); // Update state with new event
+
+    // Now call processCompleteEvent to continue the flow, which includes calendar selection
+    return processCompleteEvent(replyToken, updatedEvent, userId);
   } catch (error) {
-    conversationStates.delete(userId);
+    await clearConversationState(userId);
     return handleCreateError(error, userId);
   }
 };
@@ -630,17 +700,15 @@ const handleRecurrenceResponse = async (replyToken: string, message: TextEventMe
 const processCompleteEvent = async (replyToken: string, event: CalendarEvent, userId: string, fromImage: boolean = false) => {
   // 如果 recurrence 存在但不完整，先詢問結束條件
   if (event.recurrence && !event.recurrence.includes('COUNT') && !event.recurrence.includes('UNTIL')) {
-    conversationStates.set(userId, { step: 'awaiting_recurrence_end_condition', event, timestamp: Date.now() });
+    await setConversationState(userId, { step: 'awaiting_recurrence_end_condition', event, timestamp: Date.now() });
     const reply: Message = { type: 'text', text: `好的，活動「${event.title}」是一個重複性活動，請問您希望它什麼時候結束？\n(例如: 直到年底、重複10次、或直到 2025/12/31)` };
     return fromImage ? lineClient.pushMessage(userId, reply) : lineClient.replyMessage(replyToken, reply);
   }
 
   const calendarChoices = await getCalendarChoicesForUser();
-
   // 新流程：如果有多個日曆，先讓使用者選擇
   if (calendarChoices.length > 1) {
-    conversationStates.set(userId, { step: 'awaiting_calendar_choice', event, timestamp: Date.now() });
-
+    await setConversationState(userId, { step: 'awaiting_calendar_choice', event, timestamp: Date.now() });
     const timeInfo = formatEventTime(event);
     const actions = calendarChoices.map((choice: CalendarChoice) => ({
       type: 'postback' as const,
@@ -649,7 +717,6 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
     }));
 
     const templateText = `時間：${timeInfo}\n請問您要將這個活動新增至哪個日曆？`;
-
     const template: TemplateMessage = {
       type: 'template',
       altText: `將「${event.title}」新增至日曆`,
@@ -673,10 +740,9 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
   );
 
   if (actualConflicts.length > 0) {
-    conversationStates.set(userId, { step: 'awaiting_conflict_confirmation', event, calendarId: singleCalendarId, timestamp: Date.now() });
+    await setConversationState(userId, { step: 'awaiting_conflict_confirmation', event, calendarId: singleCalendarId, timestamp: Date.now() });
     
     const hardcodedText = `您預計新增的活動「${event.title}」與現有活動時間重疊。是否仍要建立？`;
-
     const template: TemplateMessage = {
       type: 'template',
       altText: '時間衝突警告',
@@ -699,6 +765,7 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
     const reply: Message = { type: 'text', text: '收到指令，正在為您建立活動...' };
     if (!fromImage) await lineClient.replyMessage(replyToken, reply);
     const createdEvent = await createCalendarEvent(event, singleCalendarId);
+    await clearConversationState(userId); // Add this line
     return sendCreationConfirmation(userId, event, createdEvent);
   } catch (error) {
     return handleCreateError(error, userId);
@@ -714,10 +781,10 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
   console.log(`Handling postback: ${postback.data}`);
   const params = new URLSearchParams(postback.data);
   const action = params.get('action');
-  const currentState = conversationStates.get(userId);
+  const currentState = await getConversationState(userId);
 
   if (action === 'cancel') {
-    conversationStates.delete(userId);
+    await clearConversationState(userId);
     return lineClient.replyMessage(replyToken, { type: 'text', text: '好的，操作已取消。' });
   }
 
@@ -741,10 +808,9 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
     );
 
     if (actualConflicts.length > 0) {
-      conversationStates.set(userId, { step: 'awaiting_conflict_confirmation', event, calendarId: calendarId, timestamp: Date.now() });
+      await setConversationState(userId, { step: 'awaiting_conflict_confirmation', event, calendarId: calendarId, timestamp: Date.now() });
       
       const hardcodedText = `您預計新增的活動「${event.title}」與現有活動時間重疊。是否仍要建立？`;
-
       const template: TemplateMessage = {
         type: 'template',
         altText: '時間衝突警告',
@@ -766,10 +832,10 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
     try {
       await lineClient.replyMessage(replyToken, { type: 'text', text: `收到！正在為您新增活動至 Google 日曆中...` });
       const createdEvent = await createCalendarEvent(event, calendarId);
-      conversationStates.delete(userId);
+      await clearConversationState(userId);
       return sendCreationConfirmation(userId, event, createdEvent);
     } catch (error) {
-      conversationStates.delete(userId);
+      await clearConversationState(userId);
       return handleCreateError(error, userId);
     }
   }
@@ -791,7 +857,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       calendarChoices.forEach(c => calendarNameMap.set(c.id!, c.summary!));
       const calendarName = calendarNameMap.get(calendarId) || calendarId;
 
-      conversationStates.set(userId, {
+      await setConversationState(userId, {
         step: 'awaiting_delete_confirmation',
         eventId: eventId,
         calendarId: calendarId,
@@ -822,7 +888,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，您的刪除請求已逾時或無效，請重新操作。' });
     }
     const { eventId, calendarId } = currentState;
-    conversationStates.delete(userId);
+    await clearConversationState(userId);
 
     try {
       await deleteEvent(eventId, calendarId);
@@ -839,7 +905,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
     if (!eventId || !calendarId) {
       return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，找不到要修改的活動資訊。' });
     }
-    conversationStates.set(userId, {
+    await setConversationState(userId, {
       step: 'awaiting_modification_details',
       eventId: eventId,
       calendarId: calendarId,
@@ -853,12 +919,13 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，您的請求已逾時或無效，請重新操作。' });
     }
     const { event: eventToCreate, calendarId } = currentState;
-    conversationStates.delete(userId);
+    await clearConversationState(userId);
     
     await lineClient.replyMessage(replyToken, { type: 'text', text: '好的，已忽略衝突，正在為您建立活動...' });
 
     try {
         const createdEvent = await createCalendarEvent(eventToCreate as CalendarEvent, calendarId);
+        await clearConversationState(userId); // Add this line
         return sendCreationConfirmation(userId, eventToCreate as CalendarEvent, createdEvent);
     } catch (error) {
         return handleCreateError(error, userId);
@@ -886,9 +953,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       let failureCount = 0;
       const batchSize = 10;
       const delay = 500; // 每批之間延遲 500 毫秒
-
       let targetEvents: CalendarEvent[] = [];
-
       if (calendarId === 'all') {
         const calendarChoices = await getCalendarChoicesForUser();
         const allCalendarIds = calendarChoices.map(c => c.id);
@@ -932,7 +997,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
         lineClient.pushMessage(userId, { type: 'text', text: '批次新增過程中發生未預期的錯誤。' });
     });
 
-    conversationStates.delete(userId);
+    await clearConversationState(userId);
     return null; // 我們已經回覆過，所以這裡返回 null。
   }
 
@@ -943,25 +1008,21 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
 const handleEventUpdate = async (replyToken: string, message: TextEventMessage, userId: string, currentState: ConversationState) => {
   const { eventId, calendarId } = currentState;
   if (!eventId || !calendarId) {
-    conversationStates.delete(userId);
+    await clearConversationState(userId);
     return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，請求已逾時，找不到要修改的活動。' });
   }
 
   console.log(`Handling event update for eventId: ${eventId} in calendar: ${calendarId} with text: "${message.text}"`);
-  const intent = await classifyIntent(message.text);
+  const changes = await parseEventChanges(message.text);
 
-  if (intent.type !== 'update_event' || !intent.changes) {
+  if ('error' in changes || (!changes.title && !changes.start)) {
     // If Gemini couldn't parse the update, ask again.
-    return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，我不太理解您的修改指令，可以請您說得更清楚一點嗎？\n(例如：改到明天下午三點、標題改為「團隊會議」)' });
+    return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，我不太理解您的修改指令，可以請您說得更清楚一點嗎？\n(例如：時間改到明天下午三點，標題改為「團隊午餐」)' });
   }
 
-  conversationStates.delete(userId);
-
+  await clearConversationState(userId);
   try {
-    // The 'changes' object from Gemini has the CalendarEvent structure.
-    // We need to convert it to the structure required by the Google Calendar API patch request.
     const eventPatch: calendar_v3.Schema$Event = {};
-    const changes = intent.changes;
 
     if (changes.title) {
       eventPatch.summary = changes.title;
@@ -972,9 +1033,7 @@ const handleEventUpdate = async (replyToken: string, message: TextEventMessage, 
     if (changes.end) {
       eventPatch.end = { dateTime: changes.end, timeZone: 'Asia/Taipei' };
     }
-    // Note: This simple mapping doesn't handle all-day events or recurrence changes yet.
-    // This can be expanded in the future.
-
+    
     const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
 
     await lineClient.replyMessage(replyToken, { type: 'text', text: '好的，正在為您更新活動...' });
@@ -997,7 +1056,7 @@ const handleEventUpdate = async (replyToken: string, message: TextEventMessage, 
 
   } catch (error) {
     console.error('Error updating event:', error);
-    return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，更新活動時發生錯誤。' });
+    return lineClient.pushMessage(userId, { type: 'text', text: '抱歉，更新活動時發生錯誤。' });
   }
 };
 
@@ -1020,7 +1079,8 @@ const formatEventTime = (event: Partial<CalendarEvent>): string => {
       const endDateStr = endDate.toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Taipei' });
       timeInfo = `${startDateStr} 至 ${endDateStr}`;
     }
-  } else {
+  }
+  else {
     const startDate = new Date(start);
     const endDate = new Date(end);
     const startDateStr = startDate.toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Taipei' });
@@ -1174,4 +1234,4 @@ if (require.main === module) {
   app.listen(port, () => console.log(`[Local] Server is listening on http://localhost:${port}`));
 }
 export default app;
-export { conversationStates, handleEvent, handleTextMessage, handleFileMessage, handlePostbackEvent, handleImageMessage, handleRecurrenceResponse, handleTitleResponse, handleEventUpdate, processCompleteEvent };
+export { handleEvent, handleTextMessage, handleFileMessage, handlePostbackEvent, handleImageMessage, handleRecurrenceResponse, handleTitleResponse, handleEventUpdate, processCompleteEvent, formatEventTime, sendCreationConfirmation, handleCreateError };
