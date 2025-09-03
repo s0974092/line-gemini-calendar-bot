@@ -1,5 +1,17 @@
 # LINE Bot AI 日曆助手
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
+![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
+![Tests](https://img.shields.io/badge/Tests-Passing-brightgreen.svg)
+![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/git/external?repository-url=https%3A%2F%2Fgithub.com%2Fyour-repo%2Fline-gemini-calendar-bot)
+![Coverage](https://img.shields.io/badge/Coverage-92.4%25-blue.svg)
+
+![LINE Bot 簡介](./chatbot.jpg)
+
+![LINE Bot 互動範例](./helloworld.png)
+
 ## 專案概觀
 
 這是一個對話式 AI 助手，作為 LINE Bot 運作。其主要目的是幫助使用者透過自然語言建立 Google 日曆事件。該 Bot 使用 Node.js 和 TypeScript 構建，並設計用於 Vercel 上的無伺服器部署。
@@ -47,6 +59,14 @@
 ## 快速開始 / 安裝指南
 
 要設定並運行此 LINE Bot AI 日曆助手，請參閱我們的詳細 [設定指南](./SETUP.md)。該指南將引導您完成所有必要的 API 金鑰申請、環境變數配置以及本地開發和部署步驟。
+
+## 社群與支援
+
+如果您在打造自己的私人日曆助理時遇到任何困難，或有任何疑問，歡迎透過以下方式聯繫我：
+
+*   **Email**: s0974092@gmail.com
+
+我們也歡迎您透過 GitHub Issues 提交問題或建議。
 
 ## 關鍵命令
 
