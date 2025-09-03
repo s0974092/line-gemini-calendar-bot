@@ -566,7 +566,7 @@ const handleRecurrenceResponse = async (replyToken: string, message: TextEventMe
   try {
     await lineClient.replyMessage(replyToken, { type: 'text', text: '好的，已為您更新重複規則，正在建立活動... ' });
     const fullEvent: CalendarEvent = { ...originalEvent, recurrence: recurrenceResult.updatedRrule };
-    const createdEvent = await createCalendarEvent(fullEvent, fullEvent.calendarId);
+    const createdEvent = await createCalendarEvent(fullEvent, fullEvent.calendarId || 'primary');
     conversationStates.delete(userId);
     return sendCreationConfirmation(userId, fullEvent, createdEvent);
   } catch (error) {
@@ -1123,4 +1123,4 @@ if (require.main === module) {
   app.listen(port, () => console.log(`[Local] Server is listening on http://localhost:${port}`));
 }
 export default app;
-export { conversationStates, handleEvent, handleTextMessage, handleFileMessage, handlePostbackEvent, handleImageMessage, handleRecurrenceResponse, handleTitleResponse, handleEventUpdate };
+export { conversationStates, handleEvent, handleTextMessage, handleFileMessage, handlePostbackEvent, handleImageMessage, handleRecurrenceResponse, handleTitleResponse, handleEventUpdate, processCompleteEvent };
