@@ -23,10 +23,14 @@ describe('geminiService', () => {
   beforeEach(() => {
     mockGeminiApi.generateContent.mockClear();
     jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.useFakeTimers();
   });
 
   afterEach(() => {
     (console.warn as jest.Mock).mockRestore();
+    (console.error as jest.Mock).mockRestore();
+    jest.useRealTimers();
   });
 
   describe('classifyIntent', () => {
@@ -128,20 +132,19 @@ describe('geminiService', () => {
   });
 
   describe('callGeminiText with retry logic', () => {
-    // This test is for an internal function, but we test it via an exported one.
     it('should retry on 503 error and succeed on the second attempt', async () => {
       const error503 = new Error('Service Unavailable');
-      // Manually add the status property to the error object for the mock
       (error503 as any).status = 503;
-      
       const mockSuccessResponse = { title: 'Success Event' };
 
       mockGeminiApi.generateContent
         .mockRejectedValueOnce(error503)
         .mockResolvedValueOnce({ response: { text: () => JSON.stringify(mockSuccessResponse) } });
 
-      // We use parseTextToCalendarEvent to test the underlying callGeminiText
-      const result = await parseTextToCalendarEvent('Some text');
+      const promise = parseTextToCalendarEvent('Some text');
+      // Advance timer to trigger the retry after 2000ms
+      await jest.advanceTimersByTimeAsync(2000);
+      const result = await promise;
 
       expect(result).toEqual(mockSuccessResponse);
       expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(2);
@@ -151,10 +154,15 @@ describe('geminiService', () => {
       const error503 = new Error('Service Unavailable');
       (error503 as any).status = 503;
 
-      mockGeminiApi.generateContent.mockRejectedValue(error503);
+      // Mock to fail 3 times to match MAX_RETRIES
+      mockGeminiApi.generateContent
+        .mockRejectedValueOnce(error503)
+        .mockRejectedValueOnce(error503)
+        .mockRejectedValueOnce(error503);
 
-      // We use parseTextToCalendarEvent to test the underlying callGeminiText
-      const result = await parseTextToCalendarEvent('Some text');
+      const promise = parseTextToCalendarEvent('Some text');
+      await jest.runAllTimersAsync();
+      const result = await promise;
 
       expect(result).toEqual({ error: 'Failed to parse event from text.' });
       expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(3);
@@ -166,7 +174,6 @@ describe('geminiService', () => {
 
       mockGeminiApi.generateContent.mockRejectedValue(error400);
       
-      // We use parseTextToCalendarEvent to test the underlying callGeminiText
       const result = await parseTextToCalendarEvent('Some text');
 
       expect(result).toEqual({ error: 'Failed to parse event from text.' });
@@ -175,19 +182,19 @@ describe('geminiService', () => {
   });
 
   describe('callGeminiVision with retry logic', () => {
-    // This test is for an internal function, but we test it via an exported one.
     it('should retry on 503 error and succeed on the second attempt', async () => {
       const error503 = new Error('Service Unavailable');
       (error503 as any).status = 503;
-      
       const mockSuccessResponse = { events: [{ title: 'Image Event' }] };
 
       mockGeminiApi.generateContent
         .mockRejectedValueOnce(error503)
         .mockResolvedValueOnce({ response: { text: () => JSON.stringify(mockSuccessResponse) } });
 
-      // We use parseImageToCalendarEvents to test the underlying callGeminiVision
-      const result = await parseImageToCalendarEvents('base64string', 'TestPerson');
+      const promise = parseImageToCalendarEvents('base64string', 'TestPerson');
+      // Advance timer to trigger the retry after 2000ms
+      await jest.advanceTimersByTimeAsync(2000);
+      const result = await promise;
 
       expect(result).toEqual(mockSuccessResponse);
       expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(2);
@@ -197,10 +204,15 @@ describe('geminiService', () => {
       const error503 = new Error('Service Unavailable');
       (error503 as any).status = 503;
 
-      mockGeminiApi.generateContent.mockRejectedValue(error503);
+      // Mock to fail 3 times to match MAX_RETRIES
+      mockGeminiApi.generateContent
+        .mockRejectedValueOnce(error503)
+        .mockRejectedValueOnce(error503)
+        .mockRejectedValueOnce(error503);
 
-      // We use parseImageToCalendarEvents to test the underlying callGeminiVision
-      const result = await parseImageToCalendarEvents('base64string', 'TestPerson');
+      const promise = parseImageToCalendarEvents('base64string', 'TestPerson');
+      await jest.runAllTimersAsync();
+      const result = await promise;
 
       expect(result).toEqual({ error: 'Failed to parse event from image.' });
       expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(3);
@@ -212,7 +224,6 @@ describe('geminiService', () => {
 
       mockGeminiApi.generateContent.mockRejectedValue(error400);
       
-      // We use parseImageToCalendarEvents to test the underlying callGeminiVision
       const result = await parseImageToCalendarEvents('base64string', 'TestPerson');
 
       expect(result).toEqual({ error: 'Failed to parse event from image.' });

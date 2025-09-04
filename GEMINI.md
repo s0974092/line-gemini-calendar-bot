@@ -65,3 +65,15 @@ The following commands are defined in `package.json`:
 -   **Custom Error Handling:** The `DuplicateEventError` is used to control the application flow when a user tries to create an event that already exists, allowing for a specific, user-friendly message to be sent.
 -   **Duplicate Prevention:** Before creating an event, the `googleCalendarService` searches for existing events with the same title and time to prevent duplicates.
 -   **User-Friendly Replies:** The bot uses LINE's `ButtonsTemplate` for confirmations and provides detailed success messages, including a human-readable summary of any recurrence rules.
+
+-   **Message Strategy: Reply vs. Push:** To optimize cost and performance, the following strategy is strictly followed:
+    -   **Golden Rule:** Always use `replyMessage` whenever possible. It is free and does not count against the monthly message quota.
+    -   **`replyMessage` Usage:** Use for all immediate, direct responses to a user interaction (e.g., `message`, `postback`, `follow` events). It relies on the short-lived, single-use `replyToken` provided by the event.
+    -   **`pushMessage` Usage (Exceptions Only):** Only use `pushMessage` when `replyMessage` is not an option. `pushMessage` is a paid feature and counts against the monthly quota. Its use is justified in these specific scenarios:
+        1.  **No `replyToken` Available:** For events that are not a direct user interaction and thus do not provide a `replyToken` (e.g., the `join` event when the bot is added to a group).
+        2.  **Long-Running/Asynchronous Tasks:** For operations that may exceed the `replyToken`'s ~30-second lifespan (e.g., calling external APIs, batch processing, complex database queries). The correct pattern is:
+            -   Immediately acknowledge the user's request with a `replyMessage` (e.g., "Processing your request...").
+            -   Perform the long-running task in the background.
+            -   Upon completion, deliver the final result using a `pushMessage`.
+        3.  **Scheduled/Delayed Notifications:** For messages that must be sent at a specific future time (e.g., calendar reminders), which are, by definition, not in direct reply to a user's immediate action.
+        4.  **Decoupled Final Notifications:** In complex, multi-step flows, a final confirmation or error message can be sent via `pushMessage` to simplify code structure, avoiding the need to pass the `replyToken` through many layers of functions.

@@ -25,14 +25,14 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>101/101</span>
+                <span class='fraction'>105/105</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">65.21% </span>
+                <span class="strong">64% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>30/46</span>
+                <span class='fraction'>32/50</span>
             </div>
         
             
@@ -46,7 +46,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>90/90</span>
+                <span class='fraction'>94/94</span>
             </div>
         
             
@@ -353,7 +353,20 @@
 <a name='L288'></a><a href='#L288'>288</a>
 <a name='L289'></a><a href='#L289'>289</a>
 <a name='L290'></a><a href='#L290'>290</a>
-<a name='L291'></a><a href='#L291'>291</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">19x</span>
+<a name='L291'></a><a href='#L291'>291</a>
+<a name='L292'></a><a href='#L292'>292</a>
+<a name='L293'></a><a href='#L293'>293</a>
+<a name='L294'></a><a href='#L294'>294</a>
+<a name='L295'></a><a href='#L295'>295</a>
+<a name='L296'></a><a href='#L296'>296</a>
+<a name='L297'></a><a href='#L297'>297</a>
+<a name='L298'></a><a href='#L298'>298</a>
+<a name='L299'></a><a href='#L299'>299</a>
+<a name='L300'></a><a href='#L300'>300</a>
+<a name='L301'></a><a href='#L301'>301</a>
+<a name='L302'></a><a href='#L302'>302</a>
+<a name='L303'></a><a href='#L303'>303</a>
+<a name='L304'></a><a href='#L304'>304</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">19x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -574,6 +587,7 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">19x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -590,7 +604,19 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
@@ -858,29 +884,42 @@ export const findEventsInTimeRange = async (
 &nbsp;
 /**
  * 根據時間範圍和可選的關鍵字搜尋事件。
+ * 如果未提供 timeMin，則預設從現在開始搜尋。
  * @param calendarId 要搜尋的日曆 ID。
- * @param timeMin 搜尋的開始時間範圍。
- * @param timeMax 搜尋的結束時間範圍。
+ * @param timeMin 搜尋的開始時間範圍 (ISO 字串)。如果為 null/undefined，則預設為現在。
+ * @param timeMax 搜尋的結束時間範圍 (ISO 字串)。
  * @param keyword 可選的關鍵字以供篩選。
- * @returns 解析為找到的事件陣列的 Promise。
+ * @returns A promise that resolves to an object containing the found events and a potential nextPageToken.
  */
 export const searchEvents = async (
   calendarId: string,
-  timeMin: string,
-  timeMax: string,
+  timeMin: string | null | undefined,
+  timeMax: string | null | undefined,
   keyword?: string
-): Promise&lt;calendar_v3.Schema$Event[]&gt; =&gt; {
+): Promise&lt;{ events: calendar_v3.Schema$Event[], nextPageToken?: string | null | undefined }&gt; =&gt; {
   try {
-    const response = await calendar.events.list({
+    const params: calendar_v3.Params$Resource$Events$List = {
       calendarId: calendarId,
-      timeMin: timeMin,
-      timeMax: timeMax,
       q: keyword || <span class="branch-1 cbranch-no" title="branch not covered" >undefined,</span> // 如果提供則使用關鍵字，否則為 undefined
       maxResults: 10,
       singleEvents: true,
       orderBy: 'startTime',
-    });
-    return response.data.items || <span class="branch-1 cbranch-no" title="branch not covered" >[];</span>
+    };
+&nbsp;
+    // 如果未提供 timeMin，則預設為現在時間，以主要搜尋未來的事件。
+    // 這可以防止在一般查詢中傳回不相關的過去事件。
+    params.timeMin = timeMin || <span class="branch-1 cbranch-no" title="branch not covered" >new Date().toISOString();</span>
+&nbsp;
+    <span class="missing-if-branch" title="else path not taken" >E</span>if (timeMax) {
+      params.timeMax = timeMax;
+    }
+    // 如果未提供 timeMax，我們會讓它保持未定義狀態，以搜尋到未來的任何時間。
+&nbsp;
+    const response = await calendar.events.list(params);
+    return {
+        events: response.data.items || <span class="branch-1 cbranch-no" title="branch not covered" >[],</span>
+        nextPageToken: response.data.nextPageToken,
+    };
   } catch (error) {
     console.error('Error searching for events:', error);
     throw new Error('Failed to search for events.');
@@ -940,7 +979,7 @@ export const deleteEvent = async (
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-09-03T08:20:04.990Z
+                at 2025-09-04T07:50:59.799Z
             </div>
         <script src="prettify.js"></script>
         <script>

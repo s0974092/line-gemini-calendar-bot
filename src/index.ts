@@ -1256,9 +1256,10 @@ const handleCreateError = (error: any, userId: string) => {
 };
 
 // --- 本地開發 & Vercel 進入點 ---
+let server: any;
 if (require.main === module) {
   const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log(`[Local] Server is listening on http://localhost:${port}`));
+  server = app.listen(port, () => console.log(`[Local] Server is listening on http://localhost:${port}`));
 }
 export default app;
-export { handleEvent, handleTextMessage, handleFileMessage, handlePostbackEvent, handleImageMessage, handleRecurrenceResponse, handleTitleResponse, handleEventUpdate, processCompleteEvent, formatEventTime, sendCreationConfirmation, handleCreateError };
+export { server, redis, handleEvent, handleTextMessage, handleFileMessage, handlePostbackEvent, handleImageMessage, handleRecurrenceResponse, handleTitleResponse, handleEventUpdate, processCompleteEvent, formatEventTime, sendCreationConfirmation, handleCreateError, handleQueryResults, handleNewCommand };
