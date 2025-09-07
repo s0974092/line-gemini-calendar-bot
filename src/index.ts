@@ -99,80 +99,68 @@ app.post('/api/webhook', middleware(lineConfig), async (req: Request, res: Respo
   }
 });
 
-// --- 4. 主要事件路由 ---
+// --- 4. 主要事件路由 (新增全域錯誤處理) ---
 const handleEvent = async (event: WebhookEvent) => {
-  let userId: string; // 將 userId 宣告提升到這裡
+  let userId: string | undefined;
+  // 從事件來源取得 userId
+  if (event.source) {
+    userId = event.source.userId;
+  }
 
-  // 允許 'join' 事件直接通過，不進行使用者 ID 白名單檢查
-  if (event.type === 'join') {
-    // 處理 join 事件，並向群組/聊天室發送訊息
-    // 不需要在此處檢查使用者 ID
-  } else {
-    // 對於其他事件類型 (如 'message', 'postback')，檢查使用者 ID
-    userId = event.source.userId!; // 在這裡賦值
-    if (!userId || !userWhitelist.includes(userId)) {
-      console.log(`Rejected event from non-whitelisted user: ${userId}`);
-      return null;
+  try {
+    // 驗證白名單 (除了 join 事件)
+    if (event.type !== 'join') {
+      if (!userId || !userWhitelist.includes(userId)) {
+        console.log(`Rejected event from non-whitelisted user: ${userId}`);
+        return null;
+      }
     }
-  }
 
-  // 通用狀態超時檢查
-  const currentState = await getConversationState(userId!);
-  if (currentState && (Date.now() - currentState.timestamp > 10 * 60 * 1000)) { // 10 分鐘超時
-    console.log(`State for user ${userId!} has expired.`);
-    await clearConversationState(userId!);
-  }
-
-  switch (event.type) {
-    case 'message':
-      if (event.message.type === 'file') {
-        return handleFileMessage(event.replyToken, event.message as FileEventMessage, userId!);
-      } else if (event.message.type === 'image') {
-        return handleImageMessage(event.replyToken, event.message, userId!);
-      } else if (event.message.type === 'text') {
-        return handleTextMessage(event.replyToken, event.message, userId!);
+    // 通用狀態超時檢查
+    if (userId) {
+      const currentState = await getConversationState(userId);
+      if (currentState && (Date.now() - currentState.timestamp > 10 * 60 * 1000)) { // 10 分鐘超時
+        console.log(`State for user ${userId} has expired.`);
+        await clearConversationState(userId);
       }
-      break;
-    case 'postback':
-      return handlePostbackEvent(event);
-    // --- 新增：處理加入群組/聊天室事件 ---
-    case 'join':
-      const welcomeMessage = `哈囉！我是您的 AI 日曆助理。用自然語言輕鬆管理 Google 日曆！
+    }
 
-您可以這樣對我說：
+    switch (event.type) {
+      case 'message':
+        if (event.message.type === 'file') {
+          return handleFileMessage(event.replyToken, event.message as FileEventMessage, userId!); 
+        } else if (event.message.type === 'image') {
+          return handleImageMessage(event.replyToken, event.message, userId!);
+        } else if (event.message.type === 'text') {
+          return handleTextMessage(event.replyToken, event.message, userId!);
+        }
+        break;
+      case 'postback':
+        return handlePostbackEvent(event);
+      case 'join':
+        const welcomeMessage = `哈囉！我是您的 AI 日曆助理。用自然語言輕鬆管理 Google 日曆！\n\n您可以這樣對我說：\n\n🗓️ 新增活動：\n*   \n明天早上9點開會\n*   \n9月15號下午三點跟John面試\n*   \n每週一早上9點的站立會議\n (會追問結束條件)\n\n🔍 查詢活動：\n*   \n明天有什麼事\n*   \n下週有什麼活動\n*   \n我什麼時候要跟John面試\n\n✏️ 修改活動：\n*   \n把明天下午3點的會議改到下午4點\n\n🗑️ 刪除活動：\n*   \n取消明天下午3點的會議\n\n📊 班表建立 (CSV 專屬！)：\n*   想整理班表？請先說\n幫我建立[人名]的班表\n，再傳 **CSV 格式**檔案。我的火眼金睛只認 CSV，圖片還在學！\n\n請盡量使用自然語言描述您的需求，我會盡力理解！`;
 
-🗓️ 新增活動：
-*   \n明天早上9點開會\n*   \n9月15號下午三點跟John面試\n*   \n每週一早上9點的站立會議\n (會追問結束條件)
+        let targetId: string | undefined;
+        if (event.source.type === 'group') {
+          targetId = event.source.groupId;
+        } else if (event.source.type === 'room') {
+          targetId = event.source.roomId;
+        }
 
-🔍 查詢活動：
-*   \n明天有什麼事\n*   \n下週有什麼活動\n*   \n我什麼時候要跟John面試\n
-✏️ 修改活動：
-*   \n把明天下午3點的會議改到下午4點\n
-🗑️ 刪除活動：
-*   \n取消明天下午3點的會議\n
-📊 班表建立 (CSV 專屬！)：
-*   想整理班表？請先說\n幫我建立[人名]的班表\n，再傳 **CSV 格式**檔案。我的火眼金睛只認 CSV，圖片還在學！
-
-請盡量使用自然語言描述您的需求，我會盡力理解！`;
-
-      let targetId: string | undefined;
-      if (event.source.type === 'group') {
-        targetId = event.source.groupId;
-      } else if (event.source.type === 'room') {
-        targetId = event.source.roomId;
-      }
-
-      if (targetId) {
-        console.log(`Bot joined ${event.source.type}: ${targetId}. Sending welcome message.`);
-        await lineClient.pushMessage(targetId, { type: 'text', text: welcomeMessage });
-      } else {
-        console.log('Bot joined an unknown source type or missing ID.');
-      }
-      return null;
-    // --- 結束：處理加入群組/聊天室事件 ---
-    default:
-      console.log(`Unhandled event type: ${event.type}`);
-      return null;
+        if (targetId) {
+          console.log(`Bot joined ${event.source.type}: ${targetId}. Sending welcome message.`);
+          await lineClient.pushMessage(targetId, { type: 'text', text: welcomeMessage });
+        }
+        return null;
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
+        return null;
+    }
+  } catch (error) {
+    // 全域錯誤處理
+    // 對於其他錯誤，記錄並重新拋出，由頂層處理器捕捉
+    console.error(`Unhandled error in handleEvent for user ${userId}:`, error);
+    throw error;
   }
 };
 

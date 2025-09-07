@@ -23,11 +23,14 @@ describe('index.ts event handling tests', () => {
     });
 
     it('should do nothing for unhandled event types', async () => {
-        const { handleEvent } = require('./index');
+        const { handleEvent, redis } = require('./index');
         const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
         const event = { type: 'unfollow', source: { userId } } as any;
         await handleEvent(event);
         expect(consoleLogSpy).toHaveBeenCalledWith('Unhandled event type: unfollow');
         consoleLogSpy.mockRestore();
+        if (redis) {
+            await redis.quit();
+        }
     });
 });
