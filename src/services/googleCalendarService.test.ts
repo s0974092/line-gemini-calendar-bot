@@ -36,6 +36,7 @@ describe('googleCalendarService', () => {
   let updateEvent: any;
   let deleteEvent: any;
   let findEventsInTimeRange: any;
+  let getEventById: any;
 
   beforeEach(() => {
     jest.resetModules();
@@ -53,6 +54,7 @@ describe('googleCalendarService', () => {
     updateEvent = googleCalendarService.updateEvent;
     deleteEvent = googleCalendarService.deleteEvent;
     findEventsInTimeRange = googleCalendarService.findEventsInTimeRange;
+    getEventById = googleCalendarService.getEventById;
   });
 
   describe('createCalendarEvent', () => {
@@ -89,7 +91,7 @@ describe('googleCalendarService', () => {
     });
 
     it('should throw DuplicateEventError for an identical all-day event', async () => {
-        const allDayEvent = { ...event, allDay: true, start: '2025-01-02T00:00:00+08:00' };
+        const allDayEvent = { ...event, allDay: true, start: '2025-01-02T00:00:00+08:00', end: '2025-01-03T00:00:00+08:00' };
         const existingAllDayEvent = {
             summary: 'Test Event',
             start: { date: '2025-01-02' },
@@ -104,6 +106,54 @@ describe('googleCalendarService', () => {
         mockGoogleApi.events.list.mockResolvedValue({ data: { items: [] } });
         mockGoogleApi.events.insert.mockRejectedValue(new Error('API Error'));
         await expect(createCalendarEvent(event, 'primary')).rejects.toThrow('Failed to create Google Calendar event.');
+    });
+
+    it('should create event when existingEvents.data.items is null', async () => {
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: null } });
+      mockGoogleApi.events.insert.mockResolvedValue({ data: { htmlLink: 'http://example.com/event' } });
+      await createCalendarEvent(event, 'primary');
+      expect(mockGoogleApi.events.insert).toHaveBeenCalled();
+    });
+
+    it('should not throw duplicate error for event with same title but different time', async () => {
+      const existingEvent = {
+        summary: 'Test Event',
+        start: { dateTime: '2025-01-02T10:00:00+08:00' }, // Different time
+        end: { dateTime: '2025-01-02T11:00:00+08:00' },
+        htmlLink: 'http://example.com/other',
+      };
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [existingEvent] } });
+      mockGoogleApi.events.insert.mockResolvedValue({ data: { htmlLink: 'http://example.com/event' } });
+      await createCalendarEvent(event, 'primary');
+      expect(mockGoogleApi.events.insert).toHaveBeenCalled();
+    });
+
+    it('should create an event with recurrence rule', async () => {
+        const recurringEvent = { ...event, recurrence: 'RRULE:FREQ=DAILY;COUNT=5' };
+        mockGoogleApi.events.list.mockResolvedValue({ data: { items: [] } });
+        mockGoogleApi.events.insert.mockResolvedValue({ data: { htmlLink: 'http://example.com/event' } });
+        await createCalendarEvent(recurringEvent, 'primary');
+        expect(mockGoogleApi.events.insert).toHaveBeenCalledWith(expect.objectContaining({
+            requestBody: expect.objectContaining({
+                recurrence: ['RRULE:FREQ=DAILY;COUNT=5'],
+            }),
+        }));
+    });
+
+    it('should create an event with default reminder if not provided', async () => {
+        const eventWithoutReminder = { ...event };
+        delete (eventWithoutReminder as Partial<typeof event>).reminder;
+        mockGoogleApi.events.list.mockResolvedValue({ data: { items: [] } });
+        mockGoogleApi.events.insert.mockResolvedValue({ data: { htmlLink: 'http://example.com/event' } });
+        await createCalendarEvent(eventWithoutReminder, 'primary');
+        expect(mockGoogleApi.events.insert).toHaveBeenCalledWith(expect.objectContaining({
+            requestBody: expect.objectContaining({
+                reminders: {
+                    useDefault: false,
+                    overrides: [{ method: 'popup', minutes: 30 }], // default
+                },
+            }),
+        }));
     });
   });
 
@@ -172,6 +222,29 @@ describe('googleCalendarService', () => {
         expect(choices).toHaveLength(3);
         expect(choices.some((c: { id: string; }) => c.id === 'c3')).toBeFalsy(); // c3 should be excluded
     });
+
+    it('should handle empty TARGET_CALENDAR_NAME', async () => {
+      const mockCalendars = [
+        { id: 'primary', summary: '我的主要日曆', primary: true },
+        { id: 'family_id', summary: '家庭' },
+      ];
+      mockGoogleApi.calendarList.list.mockResolvedValue({ data: { items: mockCalendars } });
+      process.env.TARGET_CALENDAR_NAME = ''; // Empty
+      const choices = await getCalendarChoicesForUser();
+      expect(choices).toHaveLength(1);
+      expect(choices[0].id).toBe('primary');
+    });
+
+    it('should handle target calendar name not found', async () => {
+        const mockCalendars = [
+            { id: 'primary', summary: '我的主要日曆', primary: true },
+        ];
+        mockGoogleApi.calendarList.list.mockResolvedValue({ data: { items: mockCalendars } });
+        process.env.TARGET_CALENDAR_NAME = 'NonExistentCalendar';
+        const choices = await getCalendarChoicesForUser();
+        expect(choices).toHaveLength(1);
+        expect(choices[0].id).toBe('primary');
+    });
   });
 
   describe('findEventsInTimeRange', () => {
@@ -200,6 +273,31 @@ describe('googleCalendarService', () => {
         mockGoogleApi.events.list.mockRejectedValue(new Error('API Error'));
         await expect(searchEvents('primary', '2025-01-01T00:00:00Z', '2025-01-01T23:59:59Z', 'Test')).rejects.toThrow('Failed to search for events.');
     });
+
+    it('should search without timeMin, defaulting to now', async () => {
+      const mockEvents = [{ id: 'event1', summary: 'Found Event' }];
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: mockEvents, nextPageToken: null } });
+      const result = await searchEvents('primary', null, '2025-01-01T23:59:59Z', 'Test');
+      expect(mockGoogleApi.events.list).toHaveBeenCalledWith(expect.objectContaining({
+        timeMin: expect.any(String), // Check that it's a string, which means it was set
+        timeMax: '2025-01-01T23:59:59Z',
+      }));
+      expect(result.events).toEqual(mockEvents);
+    });
+
+    it('should search without timeMax', async () => {
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [], nextPageToken: null } });
+      await searchEvents('primary', '2025-01-01T00:00:00Z', null, 'Test');
+      const calledWith = mockGoogleApi.events.list.mock.calls[0][0];
+      expect(calledWith).not.toHaveProperty('timeMax');
+    });
+
+    it('should search without a keyword', async () => {
+        mockGoogleApi.events.list.mockResolvedValue({ data: { items: [], nextPageToken: null } });
+        await searchEvents('primary', '2025-01-01T00:00:00Z', '2025-01-01T23:59:59Z', undefined);
+        const calledWith = mockGoogleApi.events.list.mock.calls[0][0];
+        expect(calledWith.q).toBeUndefined();
+    });
   });
 
   describe('updateEvent', () => {
@@ -226,6 +324,21 @@ describe('googleCalendarService', () => {
     it('should throw an error if the API call fails', async () => {
         mockGoogleApi.events.delete.mockRejectedValue(new Error('API Error'));
         await expect(deleteEvent('eventId', 'primary')).rejects.toThrow('Failed to delete Google Calendar event.');
+    });
+  });
+
+  describe('getEventById', () => {
+    it('should return an event by ID', async () => {
+      const mockEvent = { id: 'eventId', summary: 'Event' };
+      mockGoogleApi.events.get.mockResolvedValue({ data: mockEvent });
+      const result = await getEventById('eventId', 'primary');
+      expect(result).toEqual(mockEvent);
+      expect(mockGoogleApi.events.get).toHaveBeenCalledWith({ calendarId: 'primary', eventId: 'eventId' });
+    });
+
+    it('should throw an error if the API call fails', async () => {
+      mockGoogleApi.events.get.mockRejectedValue(new Error('API Error'));
+      await expect(getEventById('eventId', 'primary')).rejects.toThrow('Failed to get event by ID.');
     });
   });
 });

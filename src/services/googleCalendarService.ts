@@ -302,3 +302,27 @@ export const deleteEvent = async (
     throw new Error('Failed to delete Google Calendar event.');
   }
 };
+
+// --- 6. 取得事件函式 ---
+
+/**
+ * 根據 ID 取得單一事件。
+ * @param eventId 要取得的事件 ID。
+ * @param calendarId 事件所在的日曆 ID。
+ * @returns 取得的事件。
+ */
+export const getEventById = async (
+  eventId: string,
+  calendarId: string
+): Promise<calendar_v3.Schema$Event> => {
+  try {
+    const response = await calendar.events.get({
+      calendarId: calendarId,
+      eventId: eventId,
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Error getting event by ID:', error);
+    throw new Error('Failed to get event by ID.');
+  }
+};
