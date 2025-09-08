@@ -345,6 +345,21 @@ describe('index.ts final coverage push', () => {
         }));
         expect(mockRedisSet).toHaveBeenCalledWith(userId, expect.stringContaining('awaiting_delete_confirmation'), 'EX', 3600);
     });
+
+    it('should handle force_create action successfully', async () => {
+        const { handlePostbackEvent } = require('./index');
+        const state = { step: 'awaiting_conflict_confirmation', event: { title: 'Forced Event' }, calendarId: 'primary', timestamp: Date.now() };
+        mockRedisGet.mockResolvedValue(JSON.stringify(state));
+        mockCreateCalendarEvent.mockResolvedValue({ htmlLink: 'link' });
+        mockGetCalendarChoicesForUser.mockResolvedValue([]); // To simplify sendCreationConfirmation
+        
+        const event = { replyToken, source: { userId }, postback: { data: 'action=force_create' } } as PostbackEvent;
+        await handlePostbackEvent(event);
+
+        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, { type: 'text', text: '好的，已忽略衝突，正在為您建立活動...' });
+        expect(mockCreateCalendarEvent).toHaveBeenCalledWith({ title: 'Forced Event' }, 'primary');
+        expect(mockRedisDel).toHaveBeenCalledWith(userId);
+    });
   });
 
   describe('handleEventUpdate', () => {
@@ -444,6 +459,19 @@ describe('index.ts final coverage push', () => {
         const result = await handleEvent(event);
         expect(result).toBeNull();
     });
+
+    it('should handle top-level error in handleEvent', async () => {
+        const { handleEvent } = require('./index');
+        const event = {
+          type: 'message',
+          replyToken,
+          source: { userId },
+          message: { type: 'text', text: 'test' },
+        } as any;
+        mockClassifyIntent.mockRejectedValue(new Error('Intent classification failed'));
+        
+        await expect(handleEvent(event)).rejects.toThrow('Intent classification failed');
+    });
   });
 
   describe('handleFileMessage', () => {
@@ -482,7 +510,7 @@ describe('index.ts final coverage push', () => {
             expect.objectContaining({type: 'text'}), 
             expect.objectContaining({ 
                 type: 'template', 
-                template: expect.objectContaining({ text: expect.stringContaining('偵測到您有多個日曆') })
+                template: expect.objectContaining({ text: expect.stringContaining('偵測到您有多個日曆') }) 
             })
         ]);
     });
@@ -588,6 +616,17 @@ describe('index.ts final coverage push', () => {
       };
       const result = formatEventTime(event);
       expect(result).toContain('2025/01/01 至 2025/01/02');
+    });
+
+    it('should format single-day all-day event', () => {
+      const { formatEventTime } = require('./index');
+      const event = {
+        start: '2025-01-01T00:00:00+08:00',
+        end: '2025-01-02T00:00:00+08:00', // Next day for all-day
+        allDay: true,
+      };
+      const result = formatEventTime(event);
+      expect(result).toContain('2025/01/01 (全天)');
     });
   });
 });

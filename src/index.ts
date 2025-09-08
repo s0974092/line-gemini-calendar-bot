@@ -134,7 +134,7 @@ const handleEvent = async (event: WebhookEvent) => {
         } else if (event.message.type === 'text') {
           return handleTextMessage(event.replyToken, event.message, userId!);
         }
-        break;
+        return null;
       case 'postback':
         return handlePostbackEvent(event);
       case 'join':

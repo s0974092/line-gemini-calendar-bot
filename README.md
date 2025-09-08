@@ -6,7 +6,7 @@
 ![Tests](https://img.shields.io/badge/Tests-Passing-brightgreen.svg)
 ![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg)
 [![Deploy to Vercel](https://img.shields.io/badge/deploy%20to-Vercel-black.svg)](https://vercel.com/new/git/external?repository-url=https%3A%2F%2Fgithub.com%2Fyour-repo%2Fline-gemini-calendar-bot)
-![Coverage](https://img.shields.io/badge/Coverage-93.7%25-blue.svg)
+![Coverage](https://img.shields.io/badge/Coverage-93.3%25-blue.svg)
 
 ![LINE Bot 簡介](./chatbot.jpg)
 
