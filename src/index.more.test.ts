@@ -11,7 +11,7 @@ const mockCreateCalendarEvent = jest.fn();
 const mockGetCalendarChoicesForUser = jest.fn();
 const mockDeleteEvent = jest.fn();
 const mockCalendarEventsGet = jest.fn();
-const mockCalendarEventsList = jest.fn(); // Added this mock
+const mockCalendarEventsList = jest.fn();
 const mockFindEventsInTimeRange = jest.fn();
 const mockSearchEvents = jest.fn();
 const mockUpdateEvent = jest.fn();
@@ -52,7 +52,7 @@ jest.mock('./services/googleCalendarService', () => ({
   calendar: {
     events: {
       get: mockCalendarEventsGet,
-      list: mockCalendarEventsList, // Added this mock
+      list: mockCalendarEventsList,
     },
   },
   DuplicateEventError: class extends Error {
@@ -331,6 +331,20 @@ describe('index.ts final coverage push', () => {
         await handlePostbackEvent(event);
         expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, { type: 'text', text: '抱歉，發生了未知的錯誤。' });
     });
+
+    it('should handle delete action successfully', async () => {
+        const { handlePostbackEvent } = require('./index');
+        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+        mockCalendarEventsGet.mockResolvedValue({ data: { summary: 'Event to delete' } });
+        const event = { replyToken, source: { userId }, postback: { data: 'action=delete&eventId=1&calendarId=primary' } } as PostbackEvent;
+        await handlePostbackEvent(event);
+        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.objectContaining({
+            template: expect.objectContaining({
+                text: expect.stringContaining('您確定要從「Primary」日曆中刪除「Event to delete」嗎？')
+            })
+        }));
+        expect(mockRedisSet).toHaveBeenCalledWith(userId, expect.stringContaining('awaiting_delete_confirmation'), 'EX', 3600);
+    });
   });
 
   describe('handleEventUpdate', () => {
@@ -365,6 +379,39 @@ describe('index.ts final coverage push', () => {
         mockGetCalendarChoicesForUser.mockResolvedValue([]);
         await sendCreationConfirmation(userId, { title: 'test' } as CalendarEvent);
         expect(mockPushMessage).toHaveBeenCalledWith(userId, { type: 'text', text: expect.stringContaining('無法立即取得活動連結') });
+    });
+
+    it('should send a carousel message if event is found in multiple calendars', async () => {
+        const { sendCreationConfirmation } = require('./index');
+        const event = { title: 'Test', start: '2025-01-01T10:00:00Z', end: '2025-01-01T11:00:00Z', allDay: false };
+        const createdEvent = { organizer: { email: 'primary' }, htmlLink: 'link1' };
+        
+        mockGetCalendarChoicesForUser.mockResolvedValue([
+            { id: 'primary', summary: 'Primary' },
+            { id: 'secondary', summary: 'Secondary' },
+        ]);
+
+        mockCalendarEventsList.mockImplementation(async (args: any) => {
+            if (args.calendarId === 'secondary') {
+                return { data: { items: [{ summary: 'Test', start: { dateTime: '2025-01-01T10:00:00.000Z' }, htmlLink: 'link2' }] } };
+            }
+            return { data: { items: [] } };
+        });
+
+        await sendCreationConfirmation(userId, event as any, createdEvent as any);
+
+        expect(mockPushMessage).toHaveBeenCalledWith(userId, [
+            { type: 'text', text: expect.stringContaining('目前存在於 2 個日曆中') },
+            expect.objectContaining({
+                type: 'template',
+                template: expect.objectContaining({
+                    type: 'carousel',
+                    columns: expect.any(Array)
+                }),
+            }),
+        ]);
+        const carousel = mockPushMessage.mock.calls[0][1][1];
+        expect(carousel.template.columns.length).toBe(2);
     });
   });
 
@@ -435,7 +482,7 @@ describe('index.ts final coverage push', () => {
             expect.objectContaining({type: 'text'}), 
             expect.objectContaining({ 
                 type: 'template', 
-                template: expect.objectContaining({ text: expect.stringContaining('偵測到您有多個日曆') }) 
+                template: expect.objectContaining({ text: expect.stringContaining('偵測到您有多個日曆') })
             })
         ]);
     });
@@ -482,6 +529,65 @@ describe('index.ts final coverage push', () => {
         expect(result[2].title).toBe('test 晚班');
         expect(result[3].title).toBe('test 早接菜');
         expect(result[4].title).toBe('test 晚班');
+    });
+  });
+
+  describe('handleRecurrenceResponse', () => {
+    it('should ask again if recurrence response is invalid', async () => {
+        const { handleRecurrenceResponse } = require('./index');
+        const state = { step: 'awaiting_recurrence_end_condition', event: { title: 'test', start: '2025-01-01T10:00:00Z', recurrence: 'RRULE:FREQ=DAILY' }, timestamp: Date.now() };
+        mockRedisGet.mockResolvedValue(JSON.stringify(state));
+        mockParseRecurrenceEndCondition.mockResolvedValue({ error: 'invalid' }); // Mock the error case
+        await handleRecurrenceResponse(replyToken, { type: 'text', text: 'invalid response' } as TextEventMessage, userId, state);
+        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, {
+            type: 'text',
+            text: expect.stringContaining('抱歉，我不太理解您的意思。'),
+        });
+        expect(mockRedisSet).toHaveBeenCalled(); // State should be updated with new timestamp
+    });
+
+    it('should handle create error after valid recurrence response', async () => {
+        const { handleRecurrenceResponse } = require('./index');
+        const state = { step: 'awaiting_recurrence_end_condition', event: { title: 'test', start: '2025-01-01T10:00:00Z', recurrence: 'RRULE:FREQ=DAILY' }, timestamp: Date.now() };
+        mockRedisGet.mockResolvedValue(JSON.stringify(state));
+        mockParseRecurrenceEndCondition.mockResolvedValue({ updatedRrule: 'RRULE:FREQ=DAILY;COUNT=5' });
+        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+        mockFindEventsInTimeRange.mockResolvedValue([]);
+        mockCreateCalendarEvent.mockRejectedValue(new Error('Create failed'));
+        await handleRecurrenceResponse(replyToken, { type: 'text', text: '5 times' } as TextEventMessage, userId, state);
+        expect(mockPushMessage).toHaveBeenCalledWith(userId, { type: 'text', text: '抱歉，新增日曆事件時發生錯誤。' });
+    });
+  });
+
+  describe('processCompleteEvent', () => {
+    it('should send conflict confirmation if events overlap', async () => {
+      const { processCompleteEvent } = require('./index');
+      const event = { title: 'Clashing Event', start: '2025-01-01T10:00:00Z', end: '2025-01-01T11:00:00Z' };
+      mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+      mockFindEventsInTimeRange.mockResolvedValue([{ summary: 'Existing Event', start: { dateTime: '2025-01-01T10:30:00Z' } }]);
+      
+      await processCompleteEvent(replyToken, event as any, userId);
+
+      expect(mockRedisSet).toHaveBeenCalledWith(userId, expect.stringContaining('awaiting_conflict_confirmation'), 'EX', 3600);
+      expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.objectContaining({
+        template: expect.objectContaining({
+          title: '⚠️ 時間衝突',
+          text: expect.stringContaining('與現有活動時間重疊'),
+        })
+      }));
+    });
+  });
+
+  describe('formatEventTime', () => {
+    const { formatEventTime } = require('./index');
+    it('should format multi-day all-day event', () => {
+      const event = {
+        start: '2025-01-01T00:00:00+08:00',
+        end: '2025-01-03T00:00:00+08:00', // 2 full days
+        allDay: true,
+      };
+      const result = formatEventTime(event);
+      expect(result).toContain('2025/01/01 至 2025/01/02');
     });
   });
 });

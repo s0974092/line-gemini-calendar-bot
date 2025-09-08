@@ -2,6 +2,21 @@ import { WebhookEvent } from '@line/bot-sdk';
 
 const mockReplyMessage = jest.fn();
 const mockPushMessage = jest.fn();
+const mockRedisGet = jest.fn();
+const mockRedisSet = jest.fn();
+const mockRedisDel = jest.fn();
+const mockRedisOn = jest.fn();
+const mockRedisQuit = jest.fn();
+
+jest.mock('ioredis', () => {
+  return jest.fn().mockImplementation(() => ({
+    get: mockRedisGet,
+    set: mockRedisSet,
+    del: mockRedisDel,
+    on: mockRedisOn,
+    quit: mockRedisQuit,
+  }));
+});
 
 jest.mock('@line/bot-sdk', () => ({
   Client: jest.fn(() => ({
