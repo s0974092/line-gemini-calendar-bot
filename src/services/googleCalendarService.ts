@@ -120,17 +120,19 @@ export const createCalendarEvent = async (event: CalendarEvent, calendarId: stri
     for (const item of existingEvents.data.items) {
       if (item.summary === event.title) {
         let isDuplicate = false;
-        if (event.allDay) {
-          // 對於單個全天事件，我們只需要檢查開始日期。
+        // Case 1: Both are all-day events
+        if (event.allDay && item.start?.date) {
           const eventStartDate = event.start.split('T')[0];
-          if (item.start?.date === eventStartDate) {
+          if (item.start.date === eventStartDate) {
             isDuplicate = true;
           }
-        } else {
+        } 
+        // Case 2: Both are timed events
+        else if (!event.allDay && item.start?.dateTime && item.end?.dateTime) {
           const eventStartTime = new Date(event.start).getTime();
           const eventEndTime = new Date(event.end).getTime();
-          const itemStartTime = new Date(item.start!.dateTime!).getTime();
-          const itemEndTime = new Date(item.end!.dateTime!).getTime();
+          const itemStartTime = new Date(item.start.dateTime).getTime();
+          const itemEndTime = new Date(item.end.dateTime).getTime();
 
           if (itemStartTime === eventStartTime && itemEndTime === eventEndTime) {
             isDuplicate = true;

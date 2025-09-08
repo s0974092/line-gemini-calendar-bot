@@ -155,6 +155,30 @@ describe('googleCalendarService', () => {
             }),
         }));
     });
+
+    it('should not throw duplicate error for a timed event clashing with an all-day event of the same name', async () => {
+      const newTimedEvent = {
+        title: 'Clash Event',
+        start: '2025-01-05T10:00:00+08:00',
+        end: '2025-01-05T11:00:00+08:00',
+        allDay: false,
+        recurrence: null,
+        reminder: 30,
+        calendarId: 'primary',
+      };
+      const existingAllDayEvent = {
+        summary: 'Clash Event',
+        start: { date: '2025-01-05' }, // Same day, but all-day
+        htmlLink: 'http://example.com/all-day-event',
+      };
+      
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [existingAllDayEvent] } });
+      mockGoogleApi.events.insert.mockResolvedValue({ data: { htmlLink: 'http://example.com/new-timed-event' } });
+
+      await createCalendarEvent(newTimedEvent, 'primary');
+
+      expect(mockGoogleApi.events.insert).toHaveBeenCalled();
+    });
   });
 
   describe('listAllCalendars', () => {

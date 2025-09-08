@@ -647,6 +647,31 @@ describe('index.ts final coverage push', () => {
         expect(result.length).toBe(1); // Should only parse the valid one
         expect(result[0].title).toBe('test 早班');
     });
+
+    it('should handle time format with no minutes (e.g., 8-12)', () => {
+      const { parseCsvToEvents } = require('./index');
+      const csv = `姓名,10/26\n"test",8-12`;
+      const result = parseCsvToEvents(csv, 'test');
+      expect(result.length).toBe(1);
+      expect(result[0].start).toContain('T08:00:00');
+      expect(result[0].end).toContain('T12:00:00');
+    });
+
+    it('should handle time format with partial minutes (e.g., 14-1630)', () => {
+      const { parseCsvToEvents } = require('./index');
+      const csv = `姓名,10/27\n"test",14-1630`;
+      const result = parseCsvToEvents(csv, 'test');
+      expect(result.length).toBe(1);
+      expect(result[0].start).toContain('T14:00:00');
+      expect(result[0].end).toContain('T16:30:00');
+    });
+
+    it('should handle csv with only header', async () => {
+      const { parseCsvToEvents } = require('./index');
+      const csv = `姓名,10/26`;
+      const result = parseCsvToEvents(csv, 'test');
+      expect(result.length).toBe(0);
+    });
   });
 
   describe('handleRecurrenceResponse', () => {
