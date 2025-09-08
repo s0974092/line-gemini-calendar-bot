@@ -189,6 +189,53 @@ describe('index.ts final coverage push', () => {
         const result = await handleNewCommand(replyToken, { type: 'text', text: '' } as TextEventMessage, userId);
         expect(result).toBeNull();
     });
+
+    it('should show "has more" message when query results are paginated', async () => {
+      const { handleNewCommand } = require('./index');
+      const query = 'find events';
+      const event = { type: 'text', text: query } as TextEventMessage;
+
+      mockClassifyIntent.mockResolvedValue({
+        type: 'query_event',
+        query: 'events',
+        timeMin: '2025-01-01T00:00:00Z',
+        timeMax: '2025-01-01T23:59:59Z',
+      });
+
+      mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+      
+      // Mock searchEvents to return a token, triggering the 'hasMore' logic
+      mockSearchEvents.mockResolvedValue({
+        events: [{ id: '1', summary: 'Event 1', start: { dateTime: '2025-01-01T10:00:00Z' }, end: { dateTime: '2025-01-01T11:00:00Z' }, organizer: { email: 'primary' } }],
+        nextPageToken: 'some-next-page-token',
+      });
+
+      await handleNewCommand(replyToken, event, userId);
+
+      // The reply should be an array of messages
+      const reply = mockReplyMessage.mock.calls[0][1];
+      const textMessage = reply.find((msg: any) => msg.type === 'text');
+
+      expect(textMessage.text).toContain('還有更多結果');
+    });
+
+    it('should handle query result with missing event id', async () => {
+      const { handleNewCommand } = require('./index');
+      mockClassifyIntent.mockResolvedValue({ type: 'query_event', query: 'test' });
+      mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+      // Return an event without an ID
+      mockSearchEvents.mockResolvedValue({ events: [{ summary: 'Event without ID' }] }); 
+
+      await handleNewCommand(replyToken, { type: 'text', text: '' } as TextEventMessage, userId);
+
+      const replyArgs = mockReplyMessage.mock.calls[0][1];
+      const carouselMessage = replyArgs.find((m: any) => m.type === 'template');
+      const column = carouselMessage.template.columns[0];
+
+      // Actions for modify/delete should not be present
+      expect(column.actions.some((a:any) => a.label === '修改活動')).toBeFalsy();
+      expect(column.actions.some((a:any) => a.label === '刪除活動')).toBeFalsy();
+    });
   });
 
   describe('handlePostbackEvent', () => {
@@ -396,6 +443,23 @@ describe('index.ts final coverage push', () => {
         expect(mockPushMessage).toHaveBeenCalledWith(userId, { type: 'text', text: expect.stringContaining('無法立即取得活動連結') });
     });
 
+    it('should send a fallback message if the created event cannot be found immediately', async () => {
+      const { sendCreationConfirmation } = require('./index');
+      const event = { title: 'Newly Created Event', start: '2025-01-01T10:00:00Z', end: '2025-01-01T11:00:00Z' };
+
+      // Mock that we have calendars
+      mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+      // Mock that the search for the new event returns nothing
+      mockCalendarEventsList.mockResolvedValue({ data: { items: [] } });
+
+      await sendCreationConfirmation(userId, event as any);
+
+      expect(mockPushMessage).toHaveBeenCalledWith(userId, {
+        type: 'text',
+        text: '✅ 活動「Newly Created Event」已成功新增，但無法立即取得活動連結。'
+      });
+    });
+
     it('should send a carousel message if event is found in multiple calendars', async () => {
         const { sendCreationConfirmation } = require('./index');
         const event = { title: 'Test', start: '2025-01-01T10:00:00Z', end: '2025-01-01T11:00:00Z', allDay: false };
@@ -523,6 +587,24 @@ describe('index.ts final coverage push', () => {
         await handleFileMessage(replyToken, { id: '1', fileName: 'a.csv' } as FileEventMessage, userId);
         expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, { type: 'text', text: '處理您上傳的 CSV 檔案時發生錯誤。' });
     });
+
+    it('should handle single calendar choice for CSV upload', async () => {
+        const { handleFileMessage } = require('./index');
+        const state = { step: 'awaiting_csv_upload', personName: 'test' };
+        mockRedisGet.mockResolvedValue(JSON.stringify(state));
+        mockGetMessageContent.mockResolvedValue(Readable.from('姓名,10/26\n"test",0800-1700'));
+        // Mock a single calendar choice
+        mockGetCalendarChoicesForUser.mockResolvedValue([ {id: 'primary', summary: 'Primary Calendar'} ]);
+        
+        await handleFileMessage(replyToken, { id: '1', fileName: 'a.csv' } as FileEventMessage, userId);
+
+        const replyArgs = mockReplyMessage.mock.calls[0][1];
+        const templateMessage = replyArgs.find((m: any) => m.type === 'template');
+
+        expect(templateMessage.template.type).toBe('buttons');
+        expect(templateMessage.template.text).toContain('一次全部新增至您的 Google 日曆嗎？');
+        expect(templateMessage.template.actions[0].data).toBe('action=createAllShifts&calendarId=primary');
+    });
   });
 
   describe('parseCsvToEvents', () => {
@@ -557,6 +639,13 @@ describe('index.ts final coverage push', () => {
         expect(result[2].title).toBe('test 晚班');
         expect(result[3].title).toBe('test 早接菜');
         expect(result[4].title).toBe('test 晚班');
+    });
+
+    it('should skip invalid shift patterns in csv', () => {
+        const csv = `姓名,10/26,10/27\n"test",0800-1700,????`;
+        const result = parseCsvToEvents(csv, 'test');
+        expect(result.length).toBe(1); // Should only parse the valid one
+        expect(result[0].title).toBe('test 早班');
     });
   });
 
@@ -602,6 +691,38 @@ describe('index.ts final coverage push', () => {
           title: '⚠️ 時間衝突',
           text: expect.stringContaining('與現有活動時間重疊'),
         })
+      }));
+    });
+
+    it('should handle errors during final event creation', async () => {
+      const { processCompleteEvent } = require('./index');
+      const event = { title: 'Test Event', start: '2025-01-01T10:00:00Z', end: '2025-01-01T11:00:00Z' };
+      
+      mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+      mockFindEventsInTimeRange.mockResolvedValue([]);
+      mockCreateCalendarEvent.mockRejectedValue(new Error('Final creation failed'));
+
+      await processCompleteEvent(replyToken, event as any, userId);
+
+      expect(mockPushMessage).toHaveBeenCalledWith(userId, {
+        type: 'text',
+        text: '抱歉，新增日曆事件時發生錯誤。',
+      });
+    });
+
+    it('should handle seed event with missing organizer email in sendCreationConfirmation', async () => {
+      const { sendCreationConfirmation } = require('./index');
+      const event = { title: 'Test Event', start: '2025-01-01T10:00:00Z', end: '2025-01-01T11:00:00Z' };
+      const createdEventWithoutEmail = { summary: 'Test Event', htmlLink: 'link', start: { dateTime: '2025-01-01T10:00:00Z' }, end: { dateTime: '2025-01-01T11:00:00Z' }, organizer: {} }; // No email
+
+      mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+      mockCalendarEventsList.mockResolvedValue({ data: { items: [createdEventWithoutEmail] } });
+
+      await sendCreationConfirmation(userId, event as any, createdEventWithoutEmail as any);
+
+      // Should fall back to searching and find the event, then send a single confirmation
+      expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.objectContaining({
+        template: expect.objectContaining({ title: '✅ Test Event' })
       }));
     });
   });

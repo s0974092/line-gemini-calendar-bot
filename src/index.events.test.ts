@@ -48,4 +48,37 @@ describe('index.ts event handling tests', () => {
             await redis.quit();
         }
     });
+
+    it('should do nothing for unhandled message types like sticker', async () => {
+        const { handleEvent, redis } = require('./index');
+        
+        const event: WebhookEvent = {
+            type: 'message',
+            replyToken: 'testReplyToken',
+            source: { type: 'user', userId },
+            timestamp: Date.now(),
+            mode: 'active',
+            webhookEventId: 'test-webhook-id',
+            deliveryContext: { isRedelivery: false },
+            message: {
+                type: 'sticker',
+                id: '12345',
+                packageId: '1',
+                stickerId: '1',
+                stickerResourceType: 'STATIC',
+                keywords: [],
+                quoteToken: 'test-quote-token',
+            },
+        };
+
+        const result = await handleEvent(event);
+
+        expect(result).toBeNull();
+        expect(mockReplyMessage).not.toHaveBeenCalled();
+        expect(mockPushMessage).not.toHaveBeenCalled();
+        
+        if (redis) {
+            await redis.quit();
+        }
+    });
 });

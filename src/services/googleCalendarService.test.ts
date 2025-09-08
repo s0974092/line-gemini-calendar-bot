@@ -245,6 +245,12 @@ describe('googleCalendarService', () => {
         expect(choices).toHaveLength(1);
         expect(choices[0].id).toBe('primary');
     });
+
+    it('should return default choice when listAllCalendars fails', async () => {
+      mockGoogleApi.calendarList.list.mockRejectedValue(new Error('API Error'));
+      const choices = await getCalendarChoicesForUser();
+      expect(choices).toEqual([{ id: 'primary', summary: '我的主要日曆' }]);
+    });
   });
 
   describe('findEventsInTimeRange', () => {
