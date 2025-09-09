@@ -8,9 +8,12 @@
 [![Deploy to Vercel](https://img.shields.io/badge/deploy%20to-Vercel-black.svg)](https://vercel.com/new/git/external?repository-url=https%3A%2F%2Fgithub.com%2Fyour-repo%2Fline-gemini-calendar-bot)
 ![Coverage](https://img.shields.io/badge/Coverage-93.16%25-blue.svg)
 
+![概念介紹](./concept_introduce.gif)
+
 ![LINE Bot 簡介](./chatbot.jpg)
 
 ![LINE Bot 互動範例](./helloworld.png)
+
 
 ## 專案概觀
 
