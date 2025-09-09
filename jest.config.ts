@@ -1,5 +1,6 @@
-/** @type {import('ts-jest').JestConfigWithTsJest} */
-module.exports = {
+import type { JestConfigWithTsJest } from 'ts-jest';
+
+const config: JestConfigWithTsJest = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   testMatch: ['**/src/**/*.test.ts'],
@@ -12,3 +13,5 @@ module.exports = {
   ],
   coverageReporters: ['text', 'lcov', 'html'], // 輸出格式：文字、lcov (用於 CI/CD 工具)、HTML
 };
+
+export = config;
