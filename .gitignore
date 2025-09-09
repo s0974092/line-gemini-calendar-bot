@@ -31,3 +31,4 @@ GEMINI.md
 
 # Qodana specific
 .qodo/
+/coverage/
