@@ -46,6 +46,36 @@ const clientConfig: ClientConfig = { channelAccessToken: process.env.LINE_CHANNE
 const lineClient = new Client(clientConfig);
 const userWhitelist: string[] = (process.env.USER_WHITELIST || '').split(',');
 
+const welcomeMessage = `哈囉！我是您的 AI 日曆助理。用自然語言輕鬆管理 Google 日曆！
+
+您可以這樣對我說：
+
+  🗓️ 新增活動：
+   * 明天早上9點開會
+   * 9月15號下午三點跟John面試
+   * 10/1 14:00 專案會議 地點在301會議室 備註：討論Q4目標
+   * 每週一早上9點的站立會議 (會追問結束條件)
+
+  🔍 查詢活動：
+   * 明天有什麼事
+   * 下週有什麼活動
+   * 我什麼時候要跟John面試
+
+  ✏️ 修改活動：
+   * 把明天下午3點的會議改到下午4點
+   * 修改後天的會議 (會反問您想修改的內容，可包含地點、備註)
+
+  🗑️ 刪除活動：
+   * 取消明天下午3點的會議
+
+  📊 班表建立 (CSV 專屬！)：
+   * 想整理班表？請先說幫我建立[人名]的班表，再傳 CSV 格式檔案。我的火眼金睛只認 CSV，圖片還在學！
+
+若在對話中想中斷操作，隨時可輸入「取消」。
+請盡量使用自然語言描述您的需求，我會盡力理解！
+
+💡 小提示：隨時輸入「功能列表」或「你會什麼」，就可以再次看到這個功能選單喔！`;
+
 // --- 2. 記憶體內狀態 & 酬載 ---
 
 // 用於多輪對話
@@ -138,7 +168,6 @@ const handleEvent = async (event: WebhookEvent) => {
       case 'postback':
         return handlePostbackEvent(event);
       case 'join':
-        const welcomeMessage = `哈囉！我是您的 AI 日曆助理。用自然語言輕鬆管理 Google 日曆！\n\n您可以這樣對我說：\n\n🗓️ 新增活動：\n*   \n明天早上9點開會\n*   \n9月15號下午三點跟John面試\n*   \n每週一早上9點的站立會議\n (會追問結束條件)\n\n🔍 查詢活動：\n*   \n明天有什麼事\n*   \n下週有什麼活動\n*   \n我什麼時候要跟John面試\n\n✏️ 修改活動：\n*   \n把明天下午3點的會議改到下午4點\n\n🗑️ 刪除活動：\n*   \n取消明天下午3點的會議\n\n📊 班表建立 (CSV 專屬！)：\n*   想整理班表？請先說\n幫我建立[人名]的班表\n，再傳 **CSV 格式**檔案。我的火眼金睛只認 CSV，圖片還在學！\n\n請盡量使用自然語言描述您的需求，我會盡力理解！`;
 
         let targetId: string | undefined;
         if (event.source.type === 'group') {
@@ -378,6 +407,12 @@ export const parseCsvToEvents = (csvContent: string, personName: string): Calend
 
 // --- 5b. 文字訊息處理器 (新流程) ---
 const handleTextMessage = async (replyToken: string, message: TextEventMessage, userId: string) => {
+  const text = message.text.trim().toLowerCase();
+  const helpKeywords = ['help', '幫助', '你會什麼', '你可以做什麼', '功能列表', '功能'];
+  if (helpKeywords.some(keyword => text.includes(keyword))) {
+    return lineClient.replyMessage(replyToken, { type: 'text', text: welcomeMessage });
+  }
+
   const currentState = await getConversationState(userId);
 
   // --- 新增班表分析觸發器 ---
@@ -394,6 +429,14 @@ const handleTextMessage = async (replyToken: string, message: TextEventMessage, 
       type: 'text', 
       text: `好的，請現在傳送您要為「${personName}」分析的班表 CSV 檔案。` 
     });
+  }
+
+  // --- 新增：通用取消指令 ---
+  if (message.text === '取消' || message.text.toLowerCase() === 'cancel') {
+    if (currentState) {
+      await clearConversationState(userId);
+      return lineClient.replyMessage(replyToken, { type: 'text', text: '好的，操作已取消。' });
+    }
   }
 
   // --- 現有的對話狀態邏輯 ---
@@ -461,65 +504,74 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
     case 'update_event':
       console.log(`Handling update_event with query: "${intent.query}" from ${intent.timeMin} to ${intent.timeMax}`);
       
-      // 1. Find the event to update
+      // 1. 尋找要更新的事件
       const calendarChoicesUpdate = await getCalendarChoicesForUser();
-      const allCalendarIdsUpdate = calendarChoicesUpdate.map(c => c.id!);
+      const allCalendarIdsUpdate = calendarChoicesUpdate.map(c => c.id!); 
       
       const updateSearchPromises = allCalendarIdsUpdate.map(calId => 
         searchEvents(calId, intent.timeMin, intent.timeMax, intent.query)
       );
       const eventsToUpdate = (await Promise.all(updateSearchPromises)).flatMap(r => r.events);
 
-      // 2. Handle different scenarios
+      // 2. 處理不同情況
       if (eventsToUpdate.length === 0) {
         return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，找不到您想修改的活動。' });
       }
 
-      if (eventsToUpdate.length > 1) {
-        return lineClient.replyMessage(replyToken, { type: 'text', text: '我找到了多個符合條件的活動，請您先用「查詢」功能找到想修改的活動，然後再點擊該活動下方的「修改」按鈕。' });
+      // 如果使用者直接提供了修改內容，則直接更新唯一的事件
+      if (eventsToUpdate.length === 1 && intent.changes && Object.keys(intent.changes).length > 0) {
+        const eventToUpdate = eventsToUpdate[0];
+        const eventId = eventToUpdate.id!;
+        const calendarId = eventToUpdate.organizer!.email!;
+        
+        try {
+          // 建立一個 patch 物件，將 title 對應到 summary
+          const eventPatch: calendar_v3.Schema$Event = {};
+          const { title, start, end, location, description } = intent.changes;
+          if (title) eventPatch.summary = title;
+          if (start) eventPatch.start = { dateTime: start, timeZone: 'Asia/Taipei' };
+          if (end) eventPatch.end = { dateTime: end, timeZone: 'Asia/Taipei' };
+          if (location) eventPatch.location = location;
+          if (description) eventPatch.description = description;
+
+          const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
+          // 建立並傳送包含地點和描述的確認卡片
+          const confirmationMessage = createEventCard(updatedEvent, `✅ 活動已更新`, false, '活動已更新');
+          return lineClient.replyMessage(replyToken, confirmationMessage);
+        } catch (error) {
+          console.error('Error updating event directly:', error);
+          return lineClient.pushMessage(userId, { type: 'text', text: '抱歉，更新活動時發生錯誤。' });
+        }
       }
 
-      // 3. Proceed with the update if exactly one event is found
-      const eventToUpdate = eventsToUpdate[0];
-      const eventId = eventToUpdate.id!;
-      const calendarId = eventToUpdate.organizer!.email!;
-      
-      try {
-        const eventPatch: calendar_v3.Schema$Event = {};
-        const changes = intent.changes;
-
-        if (changes.title) {
-          eventPatch.summary = changes.title;
-        }
-        if (changes.start) {
-          eventPatch.start = { dateTime: changes.start, timeZone: 'Asia/Taipei' };
-        }
-        if (changes.end) {
-          eventPatch.end = { dateTime: changes.end, timeZone: 'Asia/Taipei' };
-        }
-        
-        const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
-
-        const confirmationMessage: TemplateMessage = {
+      // 如果找到多個事件，或未提供具體修改，則要求使用者確認
+      if (eventsToUpdate.length > 1) {
+        await setConversationState(userId, { step: 'awaiting_modification_details', eventId: '', timestamp: Date.now() });
+        const eventCards = eventsToUpdate.slice(0, 10).map(event => createEventCard(event, event.summary!, true));
+        const carousel: TemplateMessage = {
           type: 'template',
-          altText: '活動已更新',
+          altText: '請選擇要修改的活動',
           template: {
-            type: 'buttons',
-            title: `✅ 活動已更新`,
-            text: `「${updatedEvent.summary}」已更新。`,
-            actions: [{
-              type: 'uri',
-              label: '在 Google 日曆中查看',
-              uri: updatedEvent.htmlLink!
-            }]
+            type: 'carousel',
+            columns: eventCards
           }
         };
-        return lineClient.replyMessage(replyToken, confirmationMessage);
-
-      } catch (error) {
-        console.error('Error updating event directly:', error);
-        return lineClient.pushMessage(userId, { type: 'text', text: '抱歉，更新活動時發生錯誤。' });
+        return lineClient.replyMessage(replyToken, [{type: 'text', text: '我找到了多個符合條件的活動，請選擇您想修改的是哪一個？'}, carousel]);
       }
+
+      // 如果只找到一個事件，要求進行修改
+      const eventToModify = eventsToUpdate[0];
+      await setConversationState(userId, {
+        step: 'awaiting_modification_details',
+        eventId: eventToModify.id!,
+        calendarId: eventToModify.organizer!.email!,
+        timestamp: Date.now(),
+      });
+      const eventCard = createEventCard(eventToModify, '我找到了這個活動');
+      return lineClient.replyMessage(replyToken, [
+        eventCard,
+        { type: 'text', text: '請問您想如何修改這個活動？\n(例如：標題改為「團隊午餐」、時間改到明天下午一點、地點在公司餐廳、加上備註「討論Q4規劃」)\n\n若不需要做修改，請輸入「取消」。' }
+      ]);
 
     case 'delete_event':
       console.log(`Handling delete_event with query: "${intent.query}" from ${intent.timeMin} to ${intent.timeMax}`);
@@ -925,7 +977,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       calendarId: calendarId,
       timestamp: Date.now(),
     });
-    return lineClient.replyMessage(replyToken, { type: 'text', text: '好的，請問您想如何修改這個活動？\n(例如：標題改為「團隊午餐」、時間改到「明天下午一點」)' });
+    return lineClient.replyMessage(replyToken, { type: 'text', text: '好的，請問您想如何修改這個活動？\n(例如：標題改為「團隊午餐」、時間改到明天下午一點、地點在公司餐廳、加上備註「討論Q4規劃」)\n\n若不需要做修改，請輸入「取消」。' });
   }
 
   if (action === 'force_create') {
@@ -1032,41 +1084,25 @@ const handleEventUpdate = async (replyToken: string, message: TextEventMessage, 
   console.log(`Handling event update for eventId: ${eventId} in calendar: ${calendarId} with text: "${message.text}"`);
   const changes = await parseEventChanges(message.text);
 
-  if ('error' in changes || (!changes.title && !changes.start)) {
+  if ('error' in changes || Object.keys(changes).length === 0) {
     // If Gemini couldn't parse the update, ask again.
-    return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，我不太理解您的修改指令，可以請您說得更清楚一點嗎？\n(例如：時間改到明天下午三點，標題改為「團隊午餐」)' });
+    return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，我不太理解您的修改指令，可以請您說得更清楚一點嗎？\n(例如：標題改為「團隊午餐」、時間改到明天下午一點、地點在公司餐廳、加上備註「討論Q4規劃」)\n\n若不需要做修改，請輸入「取消」。' });
   }
 
   await clearConversationState(userId);
   try {
+    // 建立一個 patch 物件，將 title 對應到 summary
     const eventPatch: calendar_v3.Schema$Event = {};
+    const { title, start, end, location, description } = changes;
+    if (title) eventPatch.summary = title;
+    if (start) eventPatch.start = { dateTime: start, timeZone: 'Asia/Taipei' };
+    if (end) eventPatch.end = { dateTime: end, timeZone: 'Asia/Taipei' };
+    if (location) eventPatch.location = location;
+    if (description) eventPatch.description = description;
 
-    if (changes.title) {
-      eventPatch.summary = changes.title;
-    }
-    if (changes.start) {
-      eventPatch.start = { dateTime: changes.start, timeZone: 'Asia/Taipei' };
-    }
-    if (changes.end) {
-      eventPatch.end = { dateTime: changes.end, timeZone: 'Asia/Taipei' };
-    }
-    
     const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
 
-    const confirmationMessage: TemplateMessage = {
-      type: 'template',
-      altText: '活動已更新',
-      template: {
-        type: 'buttons',
-        title: `✅ 活動已更新`,
-        text: `「${updatedEvent.summary}」已更新。`,
-        actions: [{
-          type: 'uri',
-          label: '在 Google 日曆中查看',
-          uri: updatedEvent.htmlLink!
-        }]
-      }
-    };
+    const confirmationMessage = createEventCard(updatedEvent, '✅ 活動已更新', false, '活動已更新');
     return lineClient.replyMessage(replyToken, confirmationMessage);
 
   } catch (error) {
@@ -1242,6 +1278,61 @@ const handleCreateError = (error: any, userId: string) => {
   console.error("!!!!!!!!!! DETAILED ERROR REPORT END !!!!!!!!!!");
   return lineClient.pushMessage(userId, { type: 'text', text: '抱歉，新增日曆事件時發生錯誤。' });
 };
+
+// --- 新增：建立事件卡片的輔助函式 ---
+const createEventCard = (event: calendar_v3.Schema$Event, title: string, forCarousel: boolean = false, altText?: string): any => {
+  const eventTitle = event.summary || '無標題';
+  const timeInfo = formatEventTime({
+    start: event.start?.dateTime || event.start?.date || undefined,
+    end: event.end?.dateTime || event.end?.date || undefined,
+    allDay: !!event.start?.date,
+  });
+
+  let text = `標題：${eventTitle}
+時間：${timeInfo}`;
+  if (event.location) {
+    text += `
+地點：${event.location}`;
+  }
+  if (event.description) {
+    const shortDesc = event.description.length > 30 ? `${event.description.substring(0, 30)}...` : event.description;
+    text += `\n備註：${shortDesc}`;
+  }
+
+  const actions: Action[] = [
+    {
+      type: 'postback',
+      label: '修改活動',
+      data: `action=modify&eventId=${event.id}&calendarId=${event.organizer?.email}`
+    },
+    {
+      type: 'uri',
+      label: '在日曆中查看',
+      uri: event.htmlLink!
+    },
+    
+  ];
+
+  if (forCarousel) {
+    return {
+      title: eventTitle.substring(0, 40),
+      text: text.substring(0, 60),
+      actions: actions,
+    };
+  }
+
+  return {
+    type: 'template',
+    altText: altText || `活動資訊：${eventTitle}`,
+    template: {
+      type: 'buttons',
+      title: title.substring(0, 40),
+      text: text.substring(0, 160),
+      actions: actions,
+    }
+  } as TemplateMessage;
+};
+
 
 // --- 本地開發 & Vercel 進入點 ---
 let server: any;

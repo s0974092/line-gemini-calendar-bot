@@ -139,7 +139,10 @@ describe('index.ts final coverage push', () => {
         mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary' }]);
         mockSearchEvents.mockResolvedValue({ events: [{}, {}] });
         await handleNewCommand(replyToken, { type: 'text', text: '' } as TextEventMessage, userId);
-        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, { type: 'text', text: expect.stringContaining('找到了多個符合條件的活動') });
+        const reply = mockReplyMessage.mock.calls[0][1];
+        expect(reply[0].type).toBe('text');
+        expect(reply[1].type).toBe('template');
+        expect(reply[1].template.type).toBe('carousel');
     });
 
     it('should handle update_event with error on update', async () => {

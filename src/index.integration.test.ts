@@ -669,6 +669,8 @@ describe('handleFileMessage', () => {
       const updatedEvent = {
         summary: '更新後的團隊會議',
         htmlLink: 'https://calendar.google.com/event?eid=updated-event-id',
+        start: { dateTime: '2025-01-01T12:00:00+08:00' },
+        end: { dateTime: '2025-01-01T13:00:00+08:00' },
       };
       mockUpdateEvent.mockResolvedValue(updatedEvent);
 
@@ -711,7 +713,9 @@ describe('handleFileMessage', () => {
 
       const updatedEvent = { 
         summary: changes.title, 
-        htmlLink: 'https://calendar.google.com/event?eid=modified-event-id' 
+        htmlLink: 'https://calendar.google.com/event?eid=modified-event-id', 
+        start: { dateTime: '2025-01-01T10:00:00+08:00' },
+        end: { dateTime: '2025-01-01T11:00:00+08:00' },
       };
       mockUpdateEvent.mockResolvedValue(updatedEvent);
 
@@ -737,6 +741,67 @@ describe('handleFileMessage', () => {
       expect(templateMessage.template.text).toContain(changes.title);
       expect(mockPushMessage).not.toHaveBeenCalled();
     });
+
+    it('handleEventUpdate - 應該在收到修改地點和備註的指令後更新活動', async () => {
+      // Arrange
+      const eventId = 'event-to-modify-789';
+      const calendarId = 'primary';
+      const state = { step: 'awaiting_modification_details', eventId, calendarId, timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+
+      const changes = { location: '新的會議室', description: '記得帶充電器' };
+      parseEventChangesMock.mockResolvedValue(changes);
+
+      const updatedEvent = { 
+        id: eventId,
+        summary: '原始標題', 
+        location: changes.location,
+        description: changes.description,
+        htmlLink: 'https://calendar.google.com/event?eid=modified-event-id',
+        organizer: { email: calendarId },
+        start: { dateTime: '2025-01-01T10:00:00+08:00' },
+        end: { dateTime: '2025-01-01T11:00:00+08:00' },
+      };
+      mockUpdateEvent.mockResolvedValue(updatedEvent);
+
+      const mockMessageEvent = createMockEvent({
+        type: 'message',
+        replyToken: 'replyTokenForLocationUpdate',
+        message: createMockTextMessage('地點改到新的會議室，備註是記得帶充電器'),
+      }) as MessageEvent;
+
+      // Act
+      await handleEvent(mockMessageEvent);
+
+      // Assert
+      expect(mockUpdateEvent).toHaveBeenCalledWith(eventId, calendarId, changes);
+      
+      expect(mockReplyMessage).toHaveBeenCalledTimes(1);
+      const replyArgs = mockReplyMessage.mock.calls[0];
+      const templateMessage = replyArgs[1];
+      expect(templateMessage.type).toBe('template');
+      expect(templateMessage.template.text).toContain(`地點：${changes.location}`);
+      expect(templateMessage.template.text).toContain(`備註：${changes.description}`);
+    });
+
+    it('handleTextMessage - 應該在對話狀態中透過輸入「取消」來清除狀態', async () => {
+      // Arrange
+      const state = { step: 'awaiting_modification_details', eventId: '123', calendarId: 'primary', timestamp: Date.now() };
+      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+
+      const mockMessageEvent = createMockEvent({
+        type: 'message',
+        replyToken: 'replyTokenForCancelText',
+        message: createMockTextMessage('取消'),
+      }) as MessageEvent;
+
+      // Act
+      await handleEvent(mockMessageEvent);
+
+      // Assert
+      expect(conversationStateStore.has(WHITELISTED_USER_ID)).toBe(false);
+      expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForCancelText', { type: 'text', text: '好的，操作已取消。' });
+    });
   });
 
   describe('handleNewCommand edge cases', () => {
@@ -752,10 +817,10 @@ describe('handleFileMessage', () => {
 
         await handleEvent(mockMessageEvent);
 
-        expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForUpdateMultiple', {
-            type: 'text',
-            text: '我找到了多個符合條件的活動，請您先用「查詢」功能找到想修改的活動，然後再點擊該活動下方的「修改」按鈕。',
-        });
+        const reply = mockReplyMessage.mock.calls[0][1];
+        expect(reply[0].type).toBe('text');
+        expect(reply[1].type).toBe('template');
+        expect(reply[1].template.type).toBe('carousel');
     });
 
     it('delete_event: should ask for clarification if multiple events are found', async () => {

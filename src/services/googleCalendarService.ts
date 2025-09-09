@@ -152,6 +152,8 @@ export const createCalendarEvent = async (event: CalendarEvent, calendarId: stri
   console.log('No duplicates found. Creating new event...');
   const googleEvent: calendar_v3.Schema$Event = {
     summary: event.title,
+    location: event.location, // <-- 新增
+    description: event.description, // <-- 新增
     start: {
       dateTime: event.allDay ? undefined : event.start,
       date: event.allDay ? event.start.split('T')[0] : undefined,

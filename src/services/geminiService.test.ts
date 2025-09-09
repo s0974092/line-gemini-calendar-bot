@@ -64,6 +64,19 @@ describe('geminiService', () => {
       expect(result).toEqual(mockResponse);
     });
 
+    it('should parse an event with location and description', async () => {
+      const mockResponse = {
+        title: 'Team Meeting',
+        start: '2025-09-09T10:00:00+08:00',
+        end: '2025-09-09T11:00:00+08:00',
+        location: 'Conference Room 5',
+        description: 'Discuss Q3 results'
+      };
+      mockGeminiApi.generateContent.mockResolvedValue({ response: { text: () => JSON.stringify(mockResponse) } });
+      const result = await parseTextToCalendarEvent('Tomorrow at 10am, team meeting in Conference Room 5 to discuss Q3 results');
+      expect(result).toEqual(mockResponse);
+    });
+
     it('should handle API errors gracefully', async () => {
         mockGeminiApi.generateContent.mockRejectedValue(new Error('API Error'));
         const result = await parseTextToCalendarEvent('any');
@@ -121,6 +134,16 @@ describe('geminiService', () => {
       const mockResponse = { title: 'New Title' };
       mockGeminiApi.generateContent.mockResolvedValue({ response: { text: () => JSON.stringify(mockResponse) } });
       const result = await parseEventChanges('change title to New Title');
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should parse event changes with location and description', async () => {
+      const mockResponse = { 
+        location: 'New Location',
+        description: 'New Description'
+      };
+      mockGeminiApi.generateContent.mockResolvedValue({ response: { text: () => JSON.stringify(mockResponse) } });
+      const result = await parseEventChanges('location to New Location, description to New Description');
       expect(result).toEqual(mockResponse);
     });
 
