@@ -97,7 +97,7 @@ describe('googleCalendarService', () => {
       }));
     });
 
-    it('should throw DuplicateEventError if an identical event exists', async () => {
+    it('should throw DuplicateEventError with correct link for an identical timed event', async () => {
       const existingEvent = {
         summary: 'Test Event',
         start: { dateTime: '2025-01-01T10:00:00+08:00' },
@@ -106,11 +106,17 @@ describe('googleCalendarService', () => {
       };
       mockGoogleApi.events.list.mockResolvedValue({ data: { items: [existingEvent] } });
 
-      await expect(createCalendarEvent(event, 'primary')).rejects.toThrow(DuplicateEventError);
+      expect.assertions(3);
+      try {
+        await createCalendarEvent(event, 'primary');
+      } catch (e: any) {
+        expect(e).toBeInstanceOf(DuplicateEventError);
+        expect(e.htmlLink).toBe('http://example.com/duplicate');
+      }
       expect(mockGoogleApi.events.insert).not.toHaveBeenCalled();
     });
 
-    it('should throw DuplicateEventError for an identical all-day event', async () => {
+    it('should throw DuplicateEventError with correct link for an identical all-day event', async () => {
         const allDayEvent = { ...event, allDay: true, start: '2025-01-02T00:00:00+08:00', end: '2025-01-03T00:00:00+08:00' };
         const existingAllDayEvent = {
             summary: 'Test Event',
@@ -119,7 +125,14 @@ describe('googleCalendarService', () => {
         };
         mockGoogleApi.events.list.mockResolvedValue({ data: { items: [existingAllDayEvent] } });
 
-        await expect(createCalendarEvent(allDayEvent, 'primary')).rejects.toThrow(DuplicateEventError);
+        expect.assertions(3);
+        try {
+            await createCalendarEvent(allDayEvent, 'primary');
+        } catch (e: any) {
+            expect(e).toBeInstanceOf(DuplicateEventError);
+            expect(e.htmlLink).toBe('http://example.com/duplicate_allday');
+        }
+        expect(mockGoogleApi.events.insert).not.toHaveBeenCalled();
     });
 
     it('should throw an error if the insert API call fails', async () => {
