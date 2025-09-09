@@ -77,6 +77,26 @@ describe('googleCalendarService', () => {
       expect(mockGoogleApi.events.insert).toHaveBeenCalled();
     });
 
+    it('should create an event with location and description', async () => {
+      const eventWithDetails = {
+        ...event,
+        location: '123 Main St',
+        description: 'Project kickoff meeting',
+      };
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [] } });
+      mockGoogleApi.events.insert.mockResolvedValue({ data: { htmlLink: 'http://example.com/event' } });
+
+      await createCalendarEvent(eventWithDetails, 'primary');
+
+      expect(mockGoogleApi.events.insert).toHaveBeenCalledWith(expect.objectContaining({
+        requestBody: expect.objectContaining({
+          summary: eventWithDetails.title,
+          location: eventWithDetails.location,
+          description: eventWithDetails.description,
+        }),
+      }));
+    });
+
     it('should throw DuplicateEventError if an identical event exists', async () => {
       const existingEvent = {
         summary: 'Test Event',
@@ -336,6 +356,18 @@ describe('googleCalendarService', () => {
       mockGoogleApi.events.patch.mockResolvedValue({ data: updatedEventData });
       const result = await updateEvent('eventId', 'primary', { summary: 'Updated Title' });
       expect(result).toEqual(updatedEventData);
+    });
+
+    it('should update an event with location and description', async () => {
+      const eventPatch = { location: 'New Location', description: 'New Description' };
+      const updatedEventData = { id: 'eventId', ...eventPatch };
+      mockGoogleApi.events.patch.mockResolvedValue({ data: updatedEventData });
+      await updateEvent('eventId', 'primary', eventPatch);
+      expect(mockGoogleApi.events.patch).toHaveBeenCalledWith({
+        calendarId: 'primary',
+        eventId: 'eventId',
+        requestBody: eventPatch,
+      });
     });
 
     it('should throw an error if the API call fails', async () => {

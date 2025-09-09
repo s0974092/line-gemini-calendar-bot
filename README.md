@@ -6,7 +6,7 @@
 ![Tests](https://img.shields.io/badge/Tests-Passing-brightgreen.svg)
 ![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg)
 [![Deploy to Vercel](https://img.shields.io/badge/deploy%20to-Vercel-black.svg)](https://vercel.com/new/git/external?repository-url=https%3A%2F%2Fgithub.com%2Fyour-repo%2Fline-gemini-calendar-bot)
-![Coverage](https://img.shields.io/badge/Coverage-93.7%25-blue.svg)
+![Coverage](https://img.shields.io/badge/Coverage-93.16%25-blue.svg)
 
 ![LINE Bot 簡介](./chatbot.jpg)
 
@@ -26,6 +26,7 @@
 *   **智慧多輪對話**：當使用者提供的資訊不完整時，Bot 會主動提問，引導使用者補齊所有必要細節，確保事件資訊的完整性。
 *   **重複事件管理**：支援建立重複性日曆事件，並能理解複雜的重複規則，如「每週二下午三點」或「每月第一個星期一」。
 *   **事件重複預防**：在建立新事件前，Bot 會自動檢查 Google 日曆中是否存在相同標題和時間的事件，避免重複建立。
+*   **靈活的活動修改**：使用者不僅能修改時間或標題，還能透過自然語言直觀地新增或更新活動的「地點」和「備註」。同時，我們優化了修改時的互動流程與提示文字，讓體驗更順暢自然。
 *   **友善的互動介面**：透過 LINE 的按鈕模板 (ButtonsTemplate) 提供清晰的確認選項，並在事件建立後提供人類可讀的重複規則摘要，提升使用者體驗。
 
 ## 核心技術

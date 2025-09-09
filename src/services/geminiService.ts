@@ -13,6 +13,8 @@ export interface CalendarEvent {
   recurrence: string | null;
   reminder: number; // 以分鐘為單位
   calendarId: string;
+  location?: string; // 可選的地點
+  description?: string; // 可選的描述
 }
 
 // --- 初始文字事件解析的提示 ---
@@ -29,10 +31,11 @@ You are an expert calendar assistant. Your task is to parse a user's natural lan
 - **All-Day Event End Dates**: For all-day events, the 'end' date must be exclusive. This means the 'end' date should be set to the morning of the day *after* the event concludes.
   - Example (Single Day): An event on Oct 10th should have an end date of Oct 11th.
   - Example (Multi-Day): An event from Oct 10th to Oct 12th should have an end date of Oct 13th.
+- **Location and Description**: Also parse any location (e.g., "at 3rd floor meeting room A", "at home") or description/notes (e.g., "bring your laptop", "to discuss the Q3 budget"). If not present, these fields should be null.
 
 # Example:
-- User Input: "10/10 國慶日放假"
-- Expected JSON: { "title": "國慶日放假", "start": "2025-10-10T00:00:00+08:00", "end": "2025-10-11T00:00:00+08:00", "allDay": true, "recurrence": null, "reminder": 30, "calendarId": "primary" }
+- User Input: "明天下午三點在會議室B跟客戶開會，討論新的設計稿"
+- Expected JSON: { "title": "跟客戶開會", "start": "2025-09-09T15:00:00+08:00", "end": "2025-09-09T16:00:00+08:00", "allDay": false, "recurrence": null, "reminder": 30, "calendarId": "primary", "location": "會議室B", "description": "討論新的設計稿" }
 
 # CRITICAL RULE:
   - If the user's input contains both a title (e.g., "會議", "聚餐") and a time, parse both.
@@ -48,7 +51,10 @@ You are an expert calendar assistant. Your task is to parse a user's natural lan
   "allDay": false,
   "recurrence": "RRULE:FREQ=..." | null,
   "reminder": 30,
-  "calendarId": "primary"}
+  "calendarId": "primary",
+  "location": "string" | null,
+  "description": "string" | null
+}
 `;
 
 // --- 班表解析的提示 ---
@@ -138,14 +144,17 @@ You are an expert calendar assistant. Your task is to parse a user's natural lan
 {
   "title": "string" | null,
   "start": "YYYY-MM-DDTHH:mm:ss+08:00" | null,
-  "end": "YYYY-MM-DDTHH:mm:ss+08:00" | null
+  "end": "YYYY-MM-DDTHH:mm:ss+08:00" | null,
+  "location": "string" | null,
+  "description": "string" | null
 }
 
-# Examples (Today is 2025-09-04):
-- User Input: "時間改到明天下午兩點" -> {"title": null, "start": "2025-09-05T14:00:00+08:00", "end": "2025-09-05T15:00:00+08:00"}
-- User Input: "改到後天早上10點" -> {"title": null, "start": "2025-09-06T10:00:00+08:00", "end": "2025-09-06T11:00:00+08:00"}
-- User Input: "標題改成團隊午餐" -> {"title": "團隊午餐", "start": null, "end": null}
-- User Input: "改成明天下午三點的團隊午餐" -> {"title": "團隊午餐", "start": "2025-09-05T15:00:00+08:00", "end": "2025-09-05T16:00:00+08:00"}
+# Examples (Today is 2025-09-08):
+- User Input: "時間改到明天下午兩點" -> {"start": "2025-09-09T14:00:00+08:00", "end": "2025-09-09T15:00:00+08:00"}
+- User Input: "標題改成團隊午餐" -> {"title": "團隊午餐"}
+- User Input: "地點改到公司會議室" -> {"location": "公司會議室"}
+- User Input: "備註改成記得帶筆電" -> {"description": "記得帶筆電"}
+- User Input: "改成明天下午三點的團隊午餐，地點在公司" -> {"title": "團隊午餐", "start": "2025-09-09T15:00:00+08:00", "end": "2025-09-09T16:00:00+08:00", "location": "公司"}
 `;
 
 // --- API 呼叫函式 ---
@@ -279,7 +288,7 @@ export const parseEventChanges = async (text: string): Promise<Partial<CalendarE
 export type Intent = 
   | { type: 'create_event'; event: Partial<CalendarEvent> }
   | { type: 'query_event'; timeMin: string; timeMax: string; query: string; }
-  | { type: 'update_event'; timeMin: string; timeMax: string; query: string; changes: Partial<CalendarEvent> }
+  | { type: 'update_event'; timeMin: string; timeMax: string; query: string; changes: Partial<Omit<CalendarEvent, 'calendarId' | 'recurrence'>> }
   | { type: 'delete_event'; timeMin: string; timeMax: string; query: string; }
   | { type: 'create_schedule'; personName: string }
   | { type: 'incomplete'; originalText: string }
@@ -293,17 +302,15 @@ You are an expert in understanding user requests for a calendar bot. Your primar
 
 # Intents:
 1.  **create_event**: User wants to add a new event.
-    - Extracts: A full or partial event object, same as the event creation prompt.
-    - **CRITICAL**: If the input contains a specific time/date AND a clear event title (e.g., "會議", "聚餐", "站立會議"), especially with recurrence indicators like "每週", "每天", "每月", "每年", it MUST be classified as \`create_event\`.
+    - Extracts: A full or partial event object, including title, start, end, location, and description.
 2.  **query_event**: User wants to find an existing event.
     - Extracts: A time range (timeMin, timeMax) and a text search keyword (query).
     - **CRITICAL**: The 'query' should be the most likely title of an *existing* event. Strip away conversational filler like "活動", "的活動", "的事", "行程", "幫我找一下", "查一下", "有什麼".
     - **CRITICAL**: If the user is asking a general question about what events exist (e.g., "有什麼事", "有什麼活動"), the 'query' field should be an empty string.
 3.  **update_event**: User wants to change an existing event.
-    - Extracts: A query to find the original event and the changes to apply.
+    - Extracts: A query to find the original event and a 'changes' object containing the fields to be updated (e.g., title, start, end, location, description).
 4.  **delete_event**: User wants to remove an event.
     - Extracts: A time range (timeMin, timeMax) and a text search keyword (query), similar to query_event.
-    - **CRITICAL**: The 'query' should be the most likely title of the event. Strip away conversational filler like "取消", "的活動".
 5.  **create_schedule**: User wants to create a work schedule from a file.
     - Extracts: The person's name.
 6.  **incomplete**: The request is for creating an event but is missing crucial details.
@@ -311,23 +318,18 @@ You are an expert in understanding user requests for a calendar bot. Your primar
 
 # JSON Output Structure:
 - For "create_event": { "type": "create_event", "event": { ... } }
-- For "query_event": { "type": "query_event", "timeMin": "YYYY-MM-DDTHH:mm:ss+08:00", "timeMax": "YYYY-MM-DDTHH:mm:ss+08:00", "query": "..." }
-- For "update_event": { "type": "update_event", "timeMin": "YYYY-MM-DDTHH:mm:ss+08:00", "timeMax": "YYYY-MM-DDTHH:mm:ss+08:00", "query": "...", "changes": { ... } }
-- For "delete_event": { "type": "delete_event", "timeMin": "YYYY-MM-DDTHH:mm:ss+08:00", "timeMax": "YYYY-MM-DDTHH:mm:ss+08:00", "query": "..." }
+- For "query_event": { "type": "query_event", "timeMin": "...", "timeMax": "...", "query": "..." }
+- For "update_event": { "type": "update_event", "timeMin": "...", "timeMax": "...", "query": "...", "changes": { "title": "...", "start": "...", "location": "...", "description": "..." } }
+- For "delete_event": { "type": "delete_event", "timeMin": "...", "timeMax": "...", "query": "..." }
 - For "create_schedule": { "type": "create_schedule", "personName": "..." }
 - For "incomplete" or "unknown": { "type": "...", "originalText": "..." }
 
-# Example:
-- User: "把明天下午3點的會議改到下午4點" -> { "type": "update_event", "timeMin": "2025-09-04T15:00:00+08:00", "timeMax": "2025-09-04T16:00:00+08:00", "query": "會議", "changes": { "start": "2025-09-04T16:00:00+08:00", "end": "2025-09-04T17:00:00+08:00" } }
-- User: "幫我查一下明天下午的會議" -> { "type": "query_event", "timeMin": "2025-09-04T12:00:00+08:00", "timeMax": "2025-09-04T17:00:00+08:00", "query": "會議" }
-- User: "取消明天下午的會議" -> { "type": "delete_event", "timeMin": "2025-09-04T12:00:00+08:00", "timeMax": "2025-09-04T17:00:00+08:00", "query": "會議" }
-- User: "查詢 9/11 的活動" -> { "type": "query_event", "timeMin": "2025-09-11T00:00:00+08:00", "timeMax": "2025-09-11T23:59:59+08:00", "query": "" }
-- User: "幫我刪除 911 的團隊午餐" -> { "type": "delete_event", "timeMin": "2025-09-11T00:00:00+08:00", "timeMax": "2025-09-11T23:59:59+08:00", "query": "團隊午餐" }
-- User: "明天有什麼事" -> { "type": "query_event", "timeMin": "2025-09-03T00:00:00+08:00", "timeMax": "2025-09-03T23:59:59+08:00", "query": "" }
-- User: "明天下午三點跟客戶開會" -> { "type": "create_event", "event": { "title": "跟客戶開會", "start": "2025-09-03T15:00:00+08:00", "end": "2025-09-03T16:00:00+08:00", "allDay": false, "recurrence": null, "reminder": 30, "calendarId": "primary" } }
-- User: "每週一早上9點的站立會議" -> { "type": "create_event", "event": { "title": "站立會議", "start": "2025-09-08T09:00:00+08:00", "end": "2025-09-08T10:00:00+08:00", "allDay": false, "recurrence": "RRULE:FREQ=WEEKLY;BYDAY=MO", "reminder": 30, "calendarId": "primary" } }
-- User: "新增一個每天下午兩點的運動時間" -> { "type": "create_event", "event": { "title": "運動時間", "start": "2025-09-03T14:00:00+08:00", "end": "2025-09-03T15:00:00+08:00", "allDay": false, "recurrence": "RRULE:FREQ=DAILY", "reminder": 30, "calendarId": "primary" } }
-- User: "安排下週二的團隊午餐" -> { "type": "create_event", "event": { "title": "團隊午餐", "start": "2025-09-09T12:00:00+08:00", "end": "2025-09-09T13:00:00+08:00", "allDay": false, "recurrence": null, "reminder": 30, "calendarId": "primary" } }
+# Example (Today is 2025-09-08):
+- User: "把明天下午3點的會議地點改到線上會議室" -> { "type": "update_event", "timeMin": "2025-09-09T15:00:00+08:00", "timeMax": "2025-09-09T16:00:00+08:00", "query": "會議", "changes": { "location": "線上會議室" } }
+- User: "幫我查一下明天下午的會議" -> { "type": "query_event", "timeMin": "2025-09-09T12:00:00+08:00", "timeMax": "2025-09-09T17:00:00+08:00", "query": "會議" }
+- User: "取消明天下午的會議" -> { "type": "delete_event", "timeMin": "2025-09-09T12:00:00+08:00", "timeMax": "2025-09-09T17:00:00+08:00", "query": "會議" }
+- User: "明天下午三點跟客戶開會，地點在客戶公司，要記得帶合約" -> { "type": "create_event", "event": { "title": "跟客戶開會", "start": "2025-09-09T15:00:00+08:00", "end": "2025-09-09T16:00:00+08:00", "location": "客戶公司", "description": "要記得帶合約" } }
+- User: "每週一早上9點的站立會議" -> { "type": "create_event", "event": { "title": "站立會議", "start": "2025-09-15T09:00:00+08:00", "end": "2025-09-15T10:00:00+08:00", "recurrence": "RRULE:FREQ=WEEKLY;BYDAY=MO" } }
 `;
 
 export const classifyIntent = async (text: string): Promise<Intent> => {
