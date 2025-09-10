@@ -12,7 +12,7 @@
 
 ![LINE Bot 簡介](./chatbot.jpg)
 
-![LINE Bot 互動範例](./helloworld.png)
+![LINE Bot 互動範例](./helloworld.jpg)
 
 
 ## 專案概觀
