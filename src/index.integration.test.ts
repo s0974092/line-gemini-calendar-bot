@@ -339,7 +339,7 @@ describe('handleFileMessage', () => {
 
       await handleEvent(mockEvent);
 
-      expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, expect.objectContaining({ type: 'template', altText: '時間衝突警告' }));
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', expect.objectContaining({ type: 'template', altText: '時間衝突警告' }));
     });
 
     it('should handle delete with missing eventId', async () => {
@@ -633,10 +633,13 @@ describe('handleFileMessage', () => {
         await handleEvent(mockEvent);
 
         expect(mockCreateCalendarEvent).toHaveBeenCalledWith(eventData, 'primary');
-        expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, expect.objectContaining({
+        // 驗證最終的確認訊息是透過 replyMessage 發送
+        expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForForceCreate', expect.objectContaining({
             type: 'template',
             altText: '活動「Forced Event」已新增',
         }));
+        // 確保沒有呼叫 pushMessage
+        expect(mockPushMessage).not.toHaveBeenCalled();
     });
   });
 

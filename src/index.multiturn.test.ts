@@ -101,7 +101,13 @@ describe('Multi-turn Conversation Scenarios', () => {
       // Assertions for Turn 2
       expect(mockCreateCalendarEvent).toHaveBeenCalledWith(expect.objectContaining({ title: '跟客戶開會' }), 'primary');
       expect(mockRedisDel).toHaveBeenCalledWith(userId);
-      expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.any(Object));
+      // 驗證最終的確認訊息是透過 replyMessage 發送
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken2, expect.objectContaining({
+        type: 'template',
+        altText: '活動「跟客戶開會」已新增',
+      }));
+      // 確保沒有呼叫 pushMessage
+      expect(mockPushMessage).not.toHaveBeenCalled();
     });
 
     it('should handle multi-turn: recurring event first, then end condition', async () => {
@@ -154,5 +160,54 @@ describe('Multi-turn Conversation Scenarios', () => {
             'primary'
         );
         expect(mockRedisDel).toHaveBeenCalledWith(userId);
+    });
+
+    it('should ask for confirmation when a conflicting event is found', async () => {
+      const userId = 'multi-turn-user';
+      const replyToken = 'reply-token-conflict';
+      const eventToCreate = {
+        title: '有衝突的會議',
+        start: '2025-10-26T10:00:00+08:00',
+        end: '2025-10-26T11:00:00+08:00',
+      };
+      const message = { type: 'text', text: '明天十點有個有衝突的會議' } as any;
+      
+      const conflictingEvent = {
+        summary: '已經存在的會議',
+        start: { dateTime: '2025-10-26T10:30:00+08:00' },
+        end: { dateTime: '2025-10-26T11:30:00+08:00' },
+      };
+
+      // --- Setup Mocks ---
+      mockClassifyIntent.mockResolvedValue({ type: 'create_event', event: eventToCreate });
+      mockRedisGet.mockResolvedValue(undefined); // No initial state
+      mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+      mockFindEventsInTimeRange.mockResolvedValue([conflictingEvent]); // Simulate finding a conflict
+
+      // --- Execute ---
+      await handleTextMessage(replyToken, message, userId);
+
+      // --- Assertions ---
+      // 1. State should be set to awaiting_conflict_confirmation
+      expect(mockRedisSet).toHaveBeenCalledWith(userId, expect.any(String), 'EX', 3600);
+      const stateSet = JSON.parse(mockRedisSet.mock.calls[0][1]);
+      expect(stateSet.step).toBe('awaiting_conflict_confirmation');
+      expect(stateSet.event).toEqual(eventToCreate);
+
+      // 2. The bot should REPLY with a confirmation template, not PUSH
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, {
+        type: 'template',
+        altText: '時間衝突警告',
+        template: {
+          type: 'buttons',
+          title: '⚠️ 時間衝突',
+          text: `您預計新增的活動「${eventToCreate.title}」與現有活動時間重疊。是否仍要建立？`,
+          actions: [
+            { type: 'postback', label: '仍要建立', data: 'action=force_create' },
+            { type: 'postback', label: '取消', data: 'action=cancel' },
+          ],
+        },
+      });
+      expect(mockPushMessage).not.toHaveBeenCalled(); // Ensure pushMessage was NOT called
     });
   });

@@ -406,7 +406,16 @@ describe('index.ts final coverage push', () => {
         const event = { replyToken, source: { userId }, postback: { data: 'action=force_create' } } as PostbackEvent;
         await handlePostbackEvent(event);
 
-        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, { type: 'text', text: '好的，已忽略衝突，正在為您建立活動...' });
+        // The new flow directly replies with the confirmation template instead of an interim message.
+        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.objectContaining({
+            type: 'template',
+            altText: '活動「Forced Event」已新增',
+            template: expect.objectContaining({
+                title: '✅ Forced Event',
+                text: expect.stringContaining('已新增至「primary」日曆'),
+                actions: expect.any(Array),
+            }),
+        }));
         expect(mockCreateCalendarEvent).toHaveBeenCalledWith({ title: 'Forced Event' }, 'primary');
         expect(mockRedisDel).toHaveBeenCalledWith(userId);
     });
@@ -714,7 +723,7 @@ describe('index.ts final coverage push', () => {
       await processCompleteEvent(replyToken, event as any, userId);
 
       expect(mockRedisSet).toHaveBeenCalledWith(userId, expect.stringContaining('awaiting_conflict_confirmation'), 'EX', 3600);
-      expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.objectContaining({
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.objectContaining({
         template: expect.objectContaining({
           title: '⚠️ 時間衝突',
           text: expect.stringContaining('與現有活動時間重疊'),

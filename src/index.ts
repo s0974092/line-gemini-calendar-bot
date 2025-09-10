@@ -802,17 +802,38 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
         ],
       },
     };
-    // 因為衝突檢查延遲高，使用 pushMessage
-    return lineClient.pushMessage(userId, template);
+    // 修正：改用 replyMessage 以確保回覆到正確的聊天室
+    return lineClient.replyMessage(replyToken, template);
   }
 
   // 沒有衝突，直接建立
   try {
-    const reply: Message = { type: 'text', text: '收到指令，正在為您建立活動...' };
-    if (!fromImage) await lineClient.replyMessage(replyToken, reply);
     const createdEvent = await createCalendarEvent(event, singleCalendarId);
-    await clearConversationState(userId); // Add this line
-    return sendCreationConfirmation(userId, event, createdEvent);
+    await clearConversationState(userId);
+    
+    const timeInfo = formatEventTime(event);
+    const allCalendars = await getCalendarChoicesForUser();
+    const calendarName = allCalendars.find(c => c.id === singleCalendarId)?.summary || singleCalendarId;
+
+    const confirmationTemplate: TemplateMessage = {
+      type: 'template',
+      altText: `活動「${event.title}」已新增`,
+      template: {
+        type: 'buttons',
+        title: `✅ ${event.title.substring(0, 40)}`,
+        text: `時間：${timeInfo}\n已新增至「${calendarName}」日曆`.substring(0, 160),
+        actions: [{
+          type: 'uri',
+          label: '在 Google 日曆中查看',
+          uri: createdEvent.htmlLink!
+        }]
+      }
+    };
+    // 修正：直接使用 replyToken 回覆，而不是 pushMessage
+    return fromImage 
+      ? lineClient.pushMessage(userId, confirmationTemplate) 
+      : lineClient.replyMessage(replyToken, confirmationTemplate);
+
   } catch (error) {
     return handleCreateError(error, userId);
   }
@@ -870,8 +891,8 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
           ],
         },
       };
-      await lineClient.replyMessage(replyToken, {type: 'text', text: '好的，正在檢查時間衝突...'})
-      return lineClient.pushMessage(userId, template);
+      // 修正：直接使用 replyMessage 回覆衝突警告
+      return lineClient.replyMessage(replyToken, template);
     }
 
     // 沒有衝突，直接建立
@@ -987,12 +1008,27 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
     const { event: eventToCreate, calendarId } = currentState;
     await clearConversationState(userId);
     
-    await lineClient.replyMessage(replyToken, { type: 'text', text: '好的，已忽略衝突，正在為您建立活動...' });
-
     try {
-        const createdEvent = await createCalendarEvent(eventToCreate as CalendarEvent, calendarId);
-        await clearConversationState(userId); // Add this line
-        return sendCreationConfirmation(userId, eventToCreate as CalendarEvent, createdEvent);
+      const createdEvent = await createCalendarEvent(eventToCreate as CalendarEvent, calendarId);
+      const timeInfo = formatEventTime(eventToCreate as CalendarEvent);
+      const allCalendars = await getCalendarChoicesForUser();
+      const calendarName = allCalendars.find(c => c.id === calendarId)?.summary || calendarId;
+
+      const confirmationTemplate: TemplateMessage = {
+        type: 'template',
+        altText: `活動「${eventToCreate.title}」已新增`,
+        template: {
+          type: 'buttons',
+          title: `✅ ${eventToCreate.title!.substring(0, 40)}`,
+          text: `時間：${timeInfo}\n已新增至「${calendarName}」日曆`.substring(0, 160),
+          actions: [{
+            type: 'uri',
+            label: '在 Google 日曆中查看',
+            uri: createdEvent.htmlLink!
+          }]
+        }
+      };
+      return lineClient.replyMessage(replyToken, confirmationTemplate);
     } catch (error) {
         return handleCreateError(error, userId);
     }

@@ -242,7 +242,13 @@ describe('index.ts unit tests', () => {
       // Assertions for Turn 2
       expect(mockCreateCalendarEvent).toHaveBeenCalledWith(expect.objectContaining({ title: '跟客戶開會' }), 'primary');
       expect(mockRedisDel).toHaveBeenCalledWith(userId);
-      expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.any(Object));
+      // 驗證最終的確認訊息是透過 replyMessage 發送
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken2, expect.objectContaining({
+        type: 'template',
+        altText: '活動「跟客戶開會」已新增',
+      }));
+      // 確保沒有呼叫 pushMessage
+      expect(mockPushMessage).not.toHaveBeenCalled();
     });
 
     it('should handle multi-turn: recurring event first, then end condition', async () => {
