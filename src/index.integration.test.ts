@@ -499,14 +499,18 @@ describe('handleFileMessage', () => {
       expect(mockCreateCalendarEvent).toHaveBeenCalledTimes(2);
     });
 
-    it('should handle createAllShifts with mixed results', async () => {
+    it('should handle createAllShifts with mixed results in a group chat', async () => {
       const events = [
         { title: 'Success' },
         { title: 'Duplicate' },
         { title: 'Failure' },
       ];
+      const groupId = 'test-group-id';
       const state = { step: 'awaiting_bulk_confirmation', events, timestamp: Date.now() };
-      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      // Use composite key for state, simulating group context
+      const compositeKey = `state:${WHITELISTED_USER_ID}:${groupId}`;
+      conversationStateStore.set(compositeKey, JSON.stringify(state));
+
       mockCreateCalendarEvent.mockImplementation(event => {
         if (event.title === 'Success') return Promise.resolve({});
         if (event.title === 'Duplicate') return Promise.reject(new (require('./services/googleCalendarService').DuplicateEventError)('duplicate', 'http://example.com'));
@@ -516,6 +520,8 @@ describe('handleFileMessage', () => {
       const mockEvent = createMockEvent({
         type: 'postback',
         replyToken: 'mockReplyToken',
+        // Simulate event from a group
+        source: { type: 'group', groupId, userId: WHITELISTED_USER_ID },
         postback: { data: 'action=createAllShifts&calendarId=primary' },
       }) as PostbackEvent;
 
@@ -525,8 +531,10 @@ describe('handleFileMessage', () => {
         type: 'text',
         text: '收到！正在為您處理 3 個活動...',
       });
-      expect(mockPushMessage).toHaveBeenCalledWith(WHITELISTED_USER_ID, { type: 'text', text: `批次匯入完成：\n- 新增成功 1 件\n- 已存在 1 件\n- 失敗 1 件` });
-      expect(conversationStateStore.has(WHITELISTED_USER_ID)).toBe(false);
+      // Assert that the push message is sent to the groupId, not the userId
+      expect(mockPushMessage).toHaveBeenCalledWith(groupId, { type: 'text', text: `批次匯入完成：\n- 新增成功 1 件\n- 已存在 1 件\n- 失敗 1 件` });
+      // Assert that the correct state is cleared
+      expect(conversationStateStore.has(compositeKey)).toBe(false);
     });
 
     it('create_after_choice: 應該在選擇日曆後成功建立活動並回覆樣板訊息', async () => {

@@ -1093,10 +1093,12 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       }
 
       const summaryMessage = `批次匯入完成：\n- 新增成功 ${successCount} 件\n- 已存在 ${duplicateCount} 件\n- 失敗 ${failureCount} 件`;
-      await lineClient.pushMessage(userId, { type: 'text', text: summaryMessage });
+      // FIX: Send push message back to the original chat (group or user)
+      await lineClient.pushMessage(chatId, { type: 'text', text: summaryMessage });
     } catch (error) {
         console.error("Error during batch createAllShifts:", error);
-        await lineClient.pushMessage(userId, { type: 'text', text: '批次新增過程中發生未預期的錯誤。' });
+        // FIX: Send push message back to the original chat (group or user)
+        await lineClient.pushMessage(chatId, { type: 'text', text: '批次新增過程中發生未預期的錯誤。' });
     } finally {
       // 無論成功或失敗，最後都清除對話狀態
       await clearConversationState(userId, chatId);
