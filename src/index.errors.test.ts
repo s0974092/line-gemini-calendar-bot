@@ -159,16 +159,19 @@ describe('Error Handling Scenarios', () => {
             const replyToken = 'reply-token-file-error';
             const message = { id: '12345', fileName: 'test.csv' } as FileEventMessage;
             const currentState = { step: 'awaiting_csv_upload', personName: 'test' };
+            const mockEvent = { source: { type: 'user', userId } } as any;
     
             mockRedisGet.mockResolvedValue(JSON.stringify(currentState));
             mockGetMessageContent.mockRejectedValue(new Error('Download failed'));
     
-            await handleFileMessage(replyToken, message, userId);
+            await handleFileMessage(replyToken, message, userId, mockEvent);
     
-            expect(mockRedisDel).toHaveBeenCalledWith(userId);
+            const compositeKey = `state:${userId}:${userId}`;
+            expect(mockRedisDel).toHaveBeenCalledWith(compositeKey);
+            expect(mockRedisDel).toHaveBeenCalledWith(userId); // Also cleans up old key
             expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, {
                 type: 'text',
-                text: '處理您上傳的 CSV 檔案時發生錯誤。'
+                text: '處理您上傳的檔案時發生錯誤。'
             });
         });
       });

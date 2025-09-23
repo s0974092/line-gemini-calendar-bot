@@ -330,6 +330,7 @@ You are an expert in understanding user requests for a calendar bot. Your primar
 - User: "取消明天下午的會議" -> { "type": "delete_event", "timeMin": "2025-09-09T12:00:00+08:00", "timeMax": "2025-09-09T17:00:00+08:00", "query": "會議" }
 - User: "明天下午三點跟客戶開會，地點在客戶公司，要記得帶合約" -> { "type": "create_event", "event": { "title": "跟客戶開會", "start": "2025-09-09T15:00:00+08:00", "end": "2025-09-09T16:00:00+08:00", "location": "客戶公司", "description": "要記得帶合約" } }
 - User: "每週一早上9點的站立會議" -> { "type": "create_event", "event": { "title": "站立會議", "start": "2025-09-15T09:00:00+08:00", "end": "2025-09-15T10:00:00+08:00", "recurrence": "RRULE:FREQ=WEEKLY;BYDAY=MO" } }
+- User: "明天早上十點" -> { "type": "create_event", "event": { "title": null, "start": "2025-09-09T10:00:00+08:00", "end": "2025-09-09T11:00:00+08:00", "location": null, "description": null } }
 `;
 
 export const classifyIntent = async (text: string): Promise<Intent> => {

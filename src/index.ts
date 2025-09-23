@@ -35,6 +35,7 @@ import {
   deleteEvent,
 } from './services/googleCalendarService';
 import { Stream } from 'stream';
+import { parseCsvToEvents, parseXlsxToEvents } from './utils/excelParser';
 import Redis from 'ioredis'; // Import Redis
 
 // --- 1. 設定 ---
@@ -51,27 +52,43 @@ const welcomeMessage = `哈囉！我是您的 AI 日曆助理。用自然語言�
 您可以這樣對我說：
 
   🗓️ 新增活動：
-   * \`明天早上9點開會\`
-   * \`9月15號下午三點跟John面試\`
-   * \`10/1 14:00 專案會議 地點在301會議室 備註：討論Q4目標\`
-   * \`每週一早上9點的站立會議\` (會追問結束條件)
+   * 
+明天早上9點開會
+   * 
+9月15號下午三點跟John面試
+   * 
+10/1 14:00 專案會議 地點在301會議室 備註：討論Q4目標
+   * 
+每週一早上9點的站立會議
+ (會追問結束條件)
 
   🔍 查詢活動：
-   * \`明天有什麼事\`
-   * \`下週有什麼活動\`
-   * \`我什麼時候要跟John面試\`
+   * 
+明天有什麼事
+   * 
+下週有什麼活動
+   * 
+我什麼時候要跟John面試
 
   ✏️ 修改活動：
-   * \`把明天下午3點的會議改到下午4點\`
-   * \`修改後天的會議\` (會反問您想修改的內容，可包含地點、備註)
+   * 
+把明天下午3點的會議改到下午4點
+   * 
+修改後天的會議
+ (會反問您想修改的內容，可包含地點、備註)
 
   🗑️ 刪除活動：
-   * \`取消明天下午3點的會議\`
+   * 
+取消明天下午3點的會議
 
-  📊 班表建立 (CSV 專屬！)：
-   * 想整理班表？請先說 \`幫我建立[人名]的班表\` ，再傳 CSV 格式檔案。我的火眼金睛只認 CSV，圖片還在學！
+  📊 班表建立 (支援 CSV / XLSX！)：
+   * 想整理班表？請先說 
+幫我建立[人名]的班表
+ ，再傳 CSV 或 XLSX 格式檔案。圖片還在學！
 
-若在對話中想中斷操作，隨時可輸入 \`取消\` 。
+若在對話中想中斷操作，隨時可輸入 
+取消
+ 。
 請盡量使用自然語言描述您的需求，我會盡力理解！
 
 💡 小提示：隨時輸入「功能列表」或「你會什麼」，就可以再次看到這個功能選單喔！`;
@@ -87,6 +104,7 @@ interface ConversationState {
   timestamp: number; // 用於處理超時
   eventId?: string; // 用於修改/刪除
   calendarId?: string; // 用於修改/刪除
+  chatId?: string; // The ID of the chat (group, room, or user) where the conversation started
 }
 
 // 使用 Redis 儲存對話狀態
@@ -96,20 +114,56 @@ redis.on('error', (err) => {
   console.error('Redis Error:', err);
 });
 
+// 輔助函式：從事件中取得聊天室 ID
+function getChatId(event: WebhookEvent): string {
+  const source = event.source;
+  if (source.type === 'group') {
+    return source.groupId;
+  } else if (source.type === 'room') {
+    return source.roomId;
+  } else {
+    return source.userId!;
+  }
+}
+
+// 輔助函式：產生用於 Redis 的複合鍵
+function getCompositeKey(userId: string, chatId?: string): string {
+  // 如果提供了 chatId，則使用複合鍵，以區分不同對話。
+  // 否則，使用舊的 userId 單一鍵，以保持向下相容。
+  return chatId ? `state:${userId}:${chatId}` : userId;
+}
+
 // 輔助函式：從 Redis 取得對話狀態
-async function getConversationState(userId: string): Promise<ConversationState | undefined> {
-  const stateJson = await redis.get(userId);
-  return stateJson ? JSON.parse(stateJson) : undefined;
+async function getConversationState(userId: string, chatId?: string): Promise<ConversationState | undefined> {
+  const key = getCompositeKey(userId, chatId);
+  const stateJson = await redis.get(key);
+  if (stateJson) {
+    return JSON.parse(stateJson) as ConversationState;
+  }
+  // 如果複合鍵找不到，嘗試用舊的單一鍵尋找，以處理進行中的舊對話。
+  if (chatId) {
+    const oldStateJson = await redis.get(userId);
+    return oldStateJson ? JSON.parse(oldStateJson) : undefined;
+  }
+  return undefined;
 }
 
 // 輔助函式：設定對話狀態到 Redis (設定 1 小時過期)
-async function setConversationState(userId: string, state: ConversationState): Promise<void> {
-  await redis.set(userId, JSON.stringify(state), 'EX', 3600);
+async function setConversationState(userId: string, state: ConversationState, chatId?: string): Promise<void> {
+  const key = getCompositeKey(userId, chatId);
+  // 將 chatId 儲存到狀態物件中，以便後續流程可以取用
+  const stateToSave: ConversationState = { ...state, chatId: chatId || userId };
+  await redis.set(key, JSON.stringify(stateToSave), 'EX', 3600);
 }
 
 // 輔助函式：從 Redis 清除對話狀態
-async function clearConversationState(userId: string): Promise<void> {
-  await redis.del(userId);
+async function clearConversationState(userId: string, chatId?: string): Promise<void> {
+  const key = getCompositeKey(userId, chatId);
+  await redis.del(key);
+  // 同時也嘗試刪除舊的鍵，以完成遷移
+  if (chatId) {
+    await redis.del(userId);
+  }
 }
 
 
@@ -158,11 +212,11 @@ const handleEvent = async (event: WebhookEvent) => {
     switch (event.type) {
       case 'message':
         if (event.message.type === 'file') {
-          return handleFileMessage(event.replyToken, event.message as FileEventMessage, userId!); 
+          return handleFileMessage(event.replyToken, event.message as FileEventMessage, userId!, event); 
         } else if (event.message.type === 'image') {
           return handleImageMessage(event.replyToken, event.message, userId!);
         } else if (event.message.type === 'text') {
-          return handleTextMessage(event.replyToken, event.message, userId!);
+          return handleTextMessage(event.replyToken, event.message, userId!, event);
         }
         return null;
       case 'postback':
@@ -211,29 +265,66 @@ const streamToString = (stream: Stream): Promise<string> => {
   });
 };
 
-const handleFileMessage = async (replyToken: string, message: FileEventMessage, userId: string) => {
-  const currentState = await getConversationState(userId);
+// 將串流轉換為 Buffer 的輔助函式 (新增)
+const streamToBuffer = (stream: Stream): Promise<Buffer> => {
+  const chunks: Buffer[] = [];
+  return new Promise((resolve, reject) => {
+    stream.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    stream.on('error', (err) => reject(err));
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+  });
+};
 
+const handleFileMessage = async (replyToken: string, message: FileEventMessage, userId: string, event: WebhookEvent) => {
+  const chatId = getChatId(event);
+  const currentState = await getConversationState(userId, chatId);
+
+  // 檢查這是否是一個班表上傳的流程
   if (!currentState || currentState.step !== 'awaiting_csv_upload' || !currentState.personName) {
     return lineClient.replyMessage(replyToken, { type: 'text', text: '感謝您傳送檔案，但我不知道該如何處理它。如果您想建立班表，請先傳送「幫 [姓名] 建立班表」。' });
   }
 
-  if (!message.fileName.toLowerCase().endsWith('.csv')) {
-    return lineClient.replyMessage(replyToken, { type: 'text', text: '檔案格式錯誤，請上傳 .csv 格式的班表檔案。' });
+  // 從這裡開始，我們確定這是在正確的上下文中上傳的班表檔案
+  const personName = currentState.personName;
+  const lowerCaseFileName = message.fileName.toLowerCase();
+  const isCsv = lowerCaseFileName.endsWith('.csv');
+  const isXlsx = lowerCaseFileName.endsWith('.xlsx');
+
+  if (!isCsv && !isXlsx) {
+    return lineClient.replyMessage(replyToken, { type: 'text', text: '檔案格式錯誤，請上傳 .csv 或 .xlsx 格式的班表檔案。' });
   }
 
-  const personName = currentState.personName;
-  console.log(`CSV file received for schedule analysis for person: "${personName}"`);
+  console.log(`File received for schedule analysis for person: "${personName}" in chat ${chatId}`);
   
   try {
     const fileContentStream = await lineClient.getMessageContent(message.id);
-    const csvContent = await streamToString(fileContentStream);
-    const events = parseCsvToEvents(csvContent, personName);
+    const fileBuffer = await streamToBuffer(fileContentStream);
+    let events: CalendarEvent[];
 
-    await clearConversationState(userId);
+    if (isCsv) {
+      try {
+        const fileContent = fileBuffer.toString('utf8');
+        events = parseCsvToEvents(fileContent, personName);
+      } catch (csvError) {
+        console.error('Error parsing CSV:', csvError);
+        await clearConversationState(userId, chatId);
+        return lineClient.replyMessage(replyToken, { type: 'text', text: '處理您上傳的 CSV 檔案時發生錯誤，請檢查並確認檔案是否正確。' });
+      }
+    } else { // isXlsx
+      try {
+        events = parseXlsxToEvents(fileBuffer, personName);
+      } catch (xlsxError) {
+        console.error('Error parsing XLSX:', xlsxError);
+        await clearConversationState(userId, chatId); // <-- Use composite key
+        return lineClient.replyMessage(replyToken, { type: 'text', text: '處理您上傳的 XLSX 檔案時發生錯誤，請檢查並確認檔案是否正確。' });
+      }
+    }
+
+    // 清除舊的 'awaiting_csv_upload' 狀態
+    await clearConversationState(userId, chatId); // <-- Use composite key
 
     if (events.length === 0) {
-      return lineClient.replyMessage(replyToken, { type: 'text', text: `在您上傳的 CSV 檔案中，找不到「${personName}」的任何班次，或格式不正確。` });
+      return lineClient.replyMessage(replyToken, { type: 'text', text: `在您上傳的班表檔案中，找不到「${personName}」的任何班次，或格式不正確。` });
     }
 
     const eventListText = events.map(event => {
@@ -250,7 +341,9 @@ const handleFileMessage = async (replyToken: string, message: FileEventMessage, 
       text: `已為「${personName}」解析出以下 ${events.length} 個班次，請確認：\n\n${eventListText}`
     };
 
-    await setConversationState(userId, { step: 'awaiting_bulk_confirmation', events, timestamp: Date.now() });
+    // 設定下一步 'awaiting_bulk_confirmation' 的狀態，同樣使用複合鍵
+    await setConversationState(userId, { step: 'awaiting_bulk_confirmation', events, timestamp: Date.now() }, chatId); // <-- Use composite key
+
     const calendarChoices = await getCalendarChoicesForUser();
     let confirmationTemplate: TemplateMessage;
     if (calendarChoices.length <= 1) {
@@ -260,7 +353,7 @@ const handleFileMessage = async (replyToken: string, message: FileEventMessage, 
         altText: '需要您確認批次新增活動',
         template: {
           type: 'buttons',
-          title: `為 ${personName} 批次新增活動 (CSV)`,
+          title: `為 ${personName} 批次新增活動`,
           text: summaryText,
           actions: [
             { type: 'postback', label: '全部新增', data: `action=createAllShifts&calendarId=${calendarChoices[0]?.id || 'primary'}` },
@@ -269,12 +362,10 @@ const handleFileMessage = async (replyToken: string, message: FileEventMessage, 
         },
       };
     } else {
-      // 按鈕樣板最多支援 4 個動作。
-      // 我們將顯示最多 3 個日曆，並始終包含「取消」按鈕。
       const maxCalendarActions = 3;
       const actions: Action[] = calendarChoices.slice(0, maxCalendarActions).map((choice: CalendarChoice) => ({
         type: 'postback' as const,
-        label: choice.summary.substring(0, 20), // 標籤有 20 個字元的限制
+        label: choice.summary.substring(0, 20),
         data: `action=createAllShifts&calendarId=${choice.id}`,
       }));
 
@@ -285,7 +376,7 @@ const handleFileMessage = async (replyToken: string, message: FileEventMessage, 
         altText: '請選擇要新增的日曆',
         template: {
           type: 'buttons',
-          title: `為 ${personName} 批次新增活動 (CSV)`,
+          title: `為 ${personName} 批次新增活動`,
           text: `偵測到您有多個日曆，請問您要將這 ${events.length} 個活動新增至哪個日曆？`,
           actions: actions,
         },
@@ -295,125 +386,22 @@ const handleFileMessage = async (replyToken: string, message: FileEventMessage, 
     return lineClient.replyMessage(replyToken, [summaryMessage, confirmationTemplate]);
 
   } catch (error) {
-    console.error('Error processing uploaded CSV file:', error);
-    await clearConversationState(userId); // 發生錯誤時清除狀態
-    return lineClient.replyMessage(replyToken, { type: 'text', text: '處理您上傳的 CSV 檔案時發生錯誤。' });
+    console.error('Error processing uploaded file:', error, (error as Error).stack);
+    await clearConversationState(userId, chatId); // <-- Use composite key
+    return lineClient.replyMessage(replyToken, { type: 'text', text: '處理您上傳的檔案時發生錯誤。' });
   }
-};
-
-export const parseCsvToEvents = (csvContent: string, personName: string): CalendarEvent[] => {
-  // 如果存在 BOM 字元，則將其移除
-  if (csvContent.charCodeAt(0) === 0xFEFF) {
-    csvContent = csvContent.slice(1);
-  }
-
-  let lines = csvContent.trim().split(/\r?\n/); // 處理 \n 和 \r\n 兩種換行符
-  // 尋找實際的標頭列，假設它以「姓名」開頭
-  const headerRowIndex = lines.findIndex(line => line.startsWith('"姓名"') || line.startsWith('姓名'));
-  
-  if (headerRowIndex === -1) {
-    console.log('CSV PARSE DEBUG: Header row starting with "姓名" not found.');
-    return [];
-  }
-
-  // 丟棄標頭列之前的任何行
-  lines = lines.slice(headerRowIndex);
-
-  const events: CalendarEvent[] = [];
-  if (lines.length < 2) return []; // 資料不足
-  const header = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
-  const dateHeaders = header.slice(1);
-
-  const normalizedPersonName = personName.normalize('NFC');
-
-  const personRow = lines.slice(1).find(line => {
-    const firstCell = line.split(',')[0];
-    if (!firstCell) return false;
-    // 標準化、移除引號並修剪以確保穩健的比較
-    const cleanedName = firstCell.replace(/"/g, '').trim().normalize('NFC');
-    return cleanedName === normalizedPersonName;
-  });
-
-  if (!personRow) {
-    console.log(`CSV PARSE DEBUG: Could not find row for personName: "${personName}"`);
-    const foundNames = lines.slice(1).map(line => {
-      const cell = line.split(',')[0];
-      return cell ? cell.replace(/"/g, '').trim().normalize('NFC') : '';
-    });
-    console.log(`CSV PARSE DEBUG: Found names:`, foundNames);
-    return [];
-  }
-
-  const rowData = personRow.split(',').map(d => d.replace(/"/g, '').trim());
-  const shiftData = rowData.slice(1);
-
-  const year = new Date().getFullYear(); // 假設為當前年份
-  dateHeaders.forEach((dateStr, index) => {
-    const shift = shiftData[index];
-    if (!shift || shift === '假' || shift === '休') return;
-
-    const [month, day] = dateStr.split('/').map(Number);
-
-    let startHour: string, startMinute: string, endHour: string, endMinute: string;
-    let eventTitle: string;
-
-    // 將描述性班次對應到時間範圍
-    switch (shift) {
-      case '早班':
-        startHour = '09'; startMinute = '00'; endHour = '17'; endMinute = '00';
-        eventTitle = `${personName} ${shift}`;
-        break;
-      case '晚班':
-        startHour = '14'; startMinute = '00'; endHour = '22'; endMinute = '00';
-        eventTitle = `${personName} ${shift}`;
-        break;
-      case '早接菜':
-        startHour = '07'; startMinute = '00'; endHour = '15'; endMinute = '00';
-        eventTitle = `${personName} ${shift}`;
-        break;
-      // 根據需要為其他描述性班次新增更多案例
-      default:
-        // 如果不是描述性班次，請嘗試匹配時間模式
-        const timeMatch = shift.match(/(\d{1,2})(\d{2})?-(\d{1,2})(\d{2})?/);
-        if (!timeMatch) return; // 如果不匹配，則跳過此班次
-        startHour = timeMatch[1].padStart(2, '0');
-        startMinute = timeMatch[2] || '00';
-        endHour = timeMatch[3].padStart(2, '0');
-        endMinute = timeMatch[4] || '00';
-        
-        const startHourInt = parseInt(startHour, 10);
-        if (startHourInt < 12) {
-          eventTitle = `${personName} 早班`;
-        } else {
-          eventTitle = `${personName} 晚班`;
-        }
-        break;
-    }
-
-    const startDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    events.push({
-      title: eventTitle,
-      start: `${startDate}T${startHour}:${startMinute}:00+08:00`,
-      end: `${startDate}T${endHour}:${endMinute}:00+08:00`,
-      allDay: false,
-      recurrence: null,
-      reminder: 30,
-      calendarId: 'primary',
-    });
-  });
-
-  return events;
 };
 
 // --- 5b. 文字訊息處理器 (新流程) ---
-const handleTextMessage = async (replyToken: string, message: TextEventMessage, userId: string) => {
+const handleTextMessage = async (replyToken: string, message: TextEventMessage, userId: string, event: WebhookEvent) => {
   const text = message.text.trim().toLowerCase();
   const helpKeywords = ['help', '幫助', '你會什麼', '你可以做什麼', '功能列表', '功能'];
   if (helpKeywords.some(keyword => text.includes(keyword))) {
     return lineClient.replyMessage(replyToken, { type: 'text', text: welcomeMessage });
   }
 
-  const currentState = await getConversationState(userId);
+  const chatId = getChatId(event);
+  const currentState = await getConversationState(userId, chatId);
 
   // --- 新增班表分析觸發器 ---
   const nameMatch = message.text.match(/幫(?:「|『)?(.+?)(?:」|『)?建立班表/);
@@ -424,17 +412,17 @@ const handleTextMessage = async (replyToken: string, message: TextEventMessage, 
       step: 'awaiting_csv_upload',
       personName: personName, 
       timestamp: Date.now() 
-    });
+    }, chatId);
     return lineClient.replyMessage(replyToken, {
       type: 'text', 
-      text: `好的，請現在傳送您要為「${personName}」分析的班表 CSV 檔案。` 
+      text: `好的，請現在傳送您要為「${personName}」分析的班表 CSV 或 XLSX 檔案。` 
     });
   }
 
   // --- 新增：通用取消指令 ---
   if (message.text === '取消' || message.text.toLowerCase() === 'cancel') {
     if (currentState) {
-      await clearConversationState(userId);
+      await clearConversationState(userId, chatId);
       return lineClient.replyMessage(replyToken, { type: 'text', text: '好的，操作已取消。' });
     }
   }
@@ -451,12 +439,15 @@ const handleTextMessage = async (replyToken: string, message: TextEventMessage, 
   }
 
   // --- 現有的新指令邏輯 ---
-  return handleNewCommand(replyToken, message, userId);
+  return handleNewCommand(replyToken, message, userId, chatId);
 };
 
 
+
+
+
 // --- 5d. 處理新文字指令 ---
-const handleNewCommand = async (replyToken: string, message: TextEventMessage, userId: string) => {
+const handleNewCommand = async (replyToken: string, message: TextEventMessage, userId: string, chatId: string) => {
   console.log(`Handling new text message with intent classification: ${message.text}`);
   const intent = await classifyIntent(message.text);
 
@@ -473,11 +464,11 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
       }
 
       if (!event.title && event.start) {
-        await setConversationState(userId, { step: 'awaiting_event_title', event, timestamp: Date.now() });
+        await setConversationState(userId, { step: 'awaiting_event_title', event, timestamp: Date.now() }, chatId);
         const timeDetails = new Date(event.start).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short', hour12: false, timeZone: 'Asia/Taipei' });
         return lineClient.replyMessage(replyToken, { type: 'text', text: `好的，請問「${timeDetails}」要安排什麼活動呢？` });
       }
-      return processCompleteEvent(replyToken, event as CalendarEvent, userId);
+      return processCompleteEvent(replyToken, event as CalendarEvent, userId, chatId);
 
     case 'query_event':
       console.log(`Handling query_event with query: "${intent.query}" from ${intent.timeMin} to ${intent.timeMax}`);
@@ -627,7 +618,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
       });
       return lineClient.replyMessage(replyToken, {
         type: 'text',
-        text: `好的，請現在傳送您要為「${intent.personName}」分析的班表 CSV 檔案。`
+        text: `好的，請現在傳送您要為「${intent.personName}」分析的班表 CSV 或 XLSX 檔案。`
       });
 
     case 'incomplete':
@@ -714,39 +705,45 @@ const handleQueryResults = async (replyToken: string, query: string, events: cal
 // --- 5e. 處理標題回應 ---
 const handleTitleResponse = async (replyToken: string, message: TextEventMessage, userId: string, currentState: ConversationState) => {
   const completeEvent = { ...currentState.event, title: message.text } as CalendarEvent;
-  await clearConversationState(userId);
-  return processCompleteEvent(replyToken, completeEvent, userId);
+  const chatId = currentState.chatId!;
+  await clearConversationState(userId, chatId);
+  return processCompleteEvent(replyToken, completeEvent, userId, chatId);
 };
 
 // --- 5f. 處理重複回應 ---
 const handleRecurrenceResponse = async (replyToken: string, message: TextEventMessage, userId: string, currentState: ConversationState) => {
   const originalEvent = currentState.event as CalendarEvent;
-  const recurrenceResult = await parseRecurrenceEndCondition(message.text, originalEvent.recurrence || '', originalEvent.start);
-
-  if ('error' in recurrenceResult) {
-    currentState.timestamp = Date.now();
-    await setConversationState(userId, currentState);
-    return lineClient.replyMessage(replyToken, { type: 'text', text: `抱歉，我不太理解您的意思。請問您希望這個重複活動什麼時候結束？\n(例如: 直到年底、重複10次、或直到 2025/12/31)` });
-  }
+  const chatId = currentState.chatId!;
 
   try {
+    const recurrenceResult = await parseRecurrenceEndCondition(message.text, originalEvent.recurrence || '', originalEvent.start);
+
+    if (!recurrenceResult || 'error' in recurrenceResult) {
+      currentState.timestamp = Date.now();
+      await setConversationState(userId, currentState, chatId);
+      return lineClient.replyMessage(replyToken, { type: 'text', text: `抱歉，我不太理解您的意思。請問您希望這個重複活動什麼時候結束？\n(例如: 直到年底、重複10次、或直到 2025/12/31)` });
+    }
+
     // Update the event in the current state with the new recurrence
     const updatedEvent = { ...originalEvent, recurrence: recurrenceResult.updatedRrule };
-    await setConversationState(userId, { ...currentState, event: updatedEvent, timestamp: Date.now() }); // Update state with new event
+    await setConversationState(userId, { ...currentState, event: updatedEvent, timestamp: Date.now() }, chatId); // Update state with new event
 
     // Now call processCompleteEvent to continue the flow, which includes calendar selection
-    return processCompleteEvent(replyToken, updatedEvent, userId);
+    return processCompleteEvent(replyToken, updatedEvent, userId, chatId);
   } catch (error) {
-    await clearConversationState(userId);
-    return handleCreateError(error, userId);
+    console.error('Error in handleRecurrenceResponse:', error);
+    // It's safer to use pushMessage here as the replyToken might be invalid after a long async operation
+    await lineClient.pushMessage(userId, { type: 'text', text: '抱歉，處理重複性活動時發生錯誤。' });
+    await clearConversationState(userId, chatId);
+    return null; // Explicitly return null after handling the error
   }
 };
 
 // --- 5g. 處理完整事件 (重構後) ---
-const processCompleteEvent = async (replyToken: string, event: CalendarEvent, userId: string, fromImage: boolean = false) => {
+const processCompleteEvent = async (replyToken: string, event: CalendarEvent, userId: string, chatId: string, fromImage: boolean = false) => {
   // 如果 recurrence 存在但不完整，先詢問結束條件
   if (event.recurrence && !event.recurrence.includes('COUNT') && !event.recurrence.includes('UNTIL')) {
-    await setConversationState(userId, { step: 'awaiting_recurrence_end_condition', event, timestamp: Date.now() });
+    await setConversationState(userId, { step: 'awaiting_recurrence_end_condition', event, timestamp: Date.now() }, chatId);
     const reply: Message = { type: 'text', text: `好的，活動「${event.title}」是一個重複性活動，請問您希望它什麼時候結束？\n(例如: 直到年底、重複10次、或直到 2025/12/31)` };
     return fromImage ? lineClient.pushMessage(userId, reply) : lineClient.replyMessage(replyToken, reply);
   }
@@ -754,7 +751,7 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
   const calendarChoices = await getCalendarChoicesForUser();
   // 新流程：如果有多個日曆，先讓使用者選擇
   if (calendarChoices.length > 1) {
-    await setConversationState(userId, { step: 'awaiting_calendar_choice', event, timestamp: Date.now() });
+    await setConversationState(userId, { step: 'awaiting_calendar_choice', event, timestamp: Date.now() }, chatId);
     const timeInfo = formatEventTime(event);
     const actions = calendarChoices.map((choice: CalendarChoice) => ({
       type: 'postback' as const,
@@ -786,7 +783,7 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
   );
 
   if (actualConflicts.length > 0) {
-    await setConversationState(userId, { step: 'awaiting_conflict_confirmation', event, calendarId: singleCalendarId, timestamp: Date.now() });
+    await setConversationState(userId, { step: 'awaiting_conflict_confirmation', event, calendarId: singleCalendarId, timestamp: Date.now() }, chatId);
     
     const hardcodedText = `您預計新增的活動「${event.title}」與現有活動時間重疊。是否仍要建立？`;
     const template: TemplateMessage = {
@@ -809,11 +806,12 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
   // 沒有衝突，直接建立
   try {
     const createdEvent = await createCalendarEvent(event, singleCalendarId);
-    await clearConversationState(userId);
+    await clearConversationState(userId, chatId);
     
     const timeInfo = formatEventTime(event);
     const allCalendars = await getCalendarChoicesForUser();
     const calendarName = allCalendars.find(c => c.id === singleCalendarId)?.summary || singleCalendarId;
+
 
     const confirmationTemplate: TemplateMessage = {
       type: 'template',
@@ -845,13 +843,17 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
   const userId = source.userId;
   if (!userId) return Promise.resolve(null);
 
-  console.log(`Handling postback: ${postback.data}`);
+  const chatId = getChatId(event);
+
+  console.log(`Handling postback: ${postback.data} in chat ${chatId}`);
   const params = new URLSearchParams(postback.data);
   const action = params.get('action');
-  const currentState = await getConversationState(userId);
+  // 取得特定於此聊天室的狀態
+  const currentState = await getConversationState(userId, chatId);
 
   if (action === 'cancel') {
-    await clearConversationState(userId);
+    // 清除特定於此聊天室的狀態
+    await clearConversationState(userId, chatId);
     return lineClient.replyMessage(replyToken, { type: 'text', text: '好的，操作已取消。' });
   }
 
@@ -861,7 +863,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，您的請求已逾時或無效，請重新操作。' });
     }
     
-    const event = currentState.event as CalendarEvent;
+    const eventToCreate = currentState.event as CalendarEvent;
     const calendarId = params.get('calendarId');
 
     if (!calendarId) {
@@ -869,15 +871,15 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
     }
 
     // 在特定日曆上檢查衝突
-    const conflictingEvents = await findEventsInTimeRange(event.start!, event.end!, calendarId);
+    const conflictingEvents = await findEventsInTimeRange(eventToCreate.start!, eventToCreate.end!, calendarId);
     const actualConflicts = conflictingEvents.filter(
-      (e) => !(e.summary === event.title && new Date(e.start?.dateTime || '').getTime() === new Date(event.start!).getTime())
+      (e) => !(e.summary === eventToCreate.title && new Date(e.start?.dateTime || '').getTime() === new Date(eventToCreate.start!).getTime())
     );
 
     if (actualConflicts.length > 0) {
-      await setConversationState(userId, { step: 'awaiting_conflict_confirmation', event, calendarId: calendarId, timestamp: Date.now() });
+      await setConversationState(userId, { step: 'awaiting_conflict_confirmation', event: eventToCreate, calendarId: calendarId, timestamp: Date.now() }, chatId);
       
-      const hardcodedText = `您預計新增的活動「${event.title}」與現有活動時間重疊。是否仍要建立？`;
+      const hardcodedText = `您預計新增的活動「${eventToCreate.title}」與現有活動時間重疊。是否仍要建立？`;
       const template: TemplateMessage = {
         type: 'template',
         altText: '時間衝突警告',
@@ -891,26 +893,24 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
           ],
         },
       };
-      // 修正：直接使用 replyMessage 回覆衝突警告
       return lineClient.replyMessage(replyToken, template);
     }
 
     // 沒有衝突，直接建立
     try {
-      const createdEvent = await createCalendarEvent(event, calendarId);
-      await clearConversationState(userId);
+      const createdEvent = await createCalendarEvent(eventToCreate, calendarId);
+      await clearConversationState(userId, chatId);
 
-      // 修正：在此處直接使用 replyToken 回覆最終的確認訊息
-      const timeInfo = formatEventTime(event);
+      const timeInfo = formatEventTime(eventToCreate);
       const allCalendars = await getCalendarChoicesForUser();
       const calendarName = allCalendars.find(c => c.id === calendarId)?.summary || calendarId;
 
       const confirmationTemplate: TemplateMessage = {
         type: 'template',
-        altText: `活動「${event.title}」已新增`,
+        altText: `活動「${eventToCreate.title}」已新增`,
         template: {
           type: 'buttons',
-          title: `✅ ${event.title.substring(0, 40)}`,
+          title: `✅ ${eventToCreate.title.substring(0, 40)}`,
           text: `時間：${timeInfo}\n已新增至「${calendarName}」日曆`.substring(0, 160),
           actions: [{
             type: 'uri',
@@ -922,7 +922,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       return lineClient.replyMessage(replyToken, confirmationTemplate);
 
     } catch (error) {
-      await clearConversationState(userId);
+      await clearConversationState(userId, chatId);
       return handleCreateError(error, userId);
     }
   }
@@ -938,7 +938,6 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       const eventToDelete = await calendar.events.get({ calendarId, eventId });
       const eventTitle = eventToDelete.data.summary || '此活動';
 
-      // 取得日曆名稱以便顯示在確認訊息中
       const calendarChoices = await getCalendarChoicesForUser();
       const calendarNameMap = new Map<string, string>();
       calendarChoices.forEach(c => calendarNameMap.set(c.id!, c.summary!));
@@ -949,7 +948,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
         eventId: eventId,
         calendarId: calendarId,
         timestamp: Date.now(),
-      });
+      }, chatId);
 
       const template: TemplateMessage = {
         type: 'template',
@@ -975,7 +974,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，您的刪除請求已逾時或無效，請重新操作。' });
     }
     const { eventId, calendarId } = currentState;
-    await clearConversationState(userId);
+    await clearConversationState(userId, chatId);
 
     try {
       await deleteEvent(eventId, calendarId);
@@ -997,7 +996,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       eventId: eventId,
       calendarId: calendarId,
       timestamp: Date.now(),
-    });
+    }, chatId);
     return lineClient.replyMessage(replyToken, { type: 'text', text: '好的，請問您想如何修改這個活動？\n(例如：標題改為「團隊午餐」、時間改到明天下午一點、地點在公司餐廳、加上備註「討論Q4規劃」)\n\n若不需要做修改，請輸入「取消」。' });
   }
 
@@ -1006,7 +1005,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，您的請求已逾時或無效，請重新操作。' });
     }
     const { event: eventToCreate, calendarId } = currentState;
-    await clearConversationState(userId);
+    await clearConversationState(userId, chatId);
     
     try {
       const createdEvent = await createCalendarEvent(eventToCreate as CalendarEvent, calendarId);
@@ -1100,7 +1099,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
         await lineClient.pushMessage(userId, { type: 'text', text: '批次新增過程中發生未預期的錯誤。' });
     } finally {
       // 無論成功或失敗，最後都清除對話狀態
-      await clearConversationState(userId);
+      await clearConversationState(userId, chatId);
     }
 
     return null; // Webhook 應回傳 200 OK，實際的結果是透過 pushMessage 傳送
@@ -1332,7 +1331,8 @@ const createEventCard = (event: calendar_v3.Schema$Event, title: string, forCaro
   }
   if (event.description) {
     const shortDesc = event.description.length > 30 ? `${event.description.substring(0, 30)}...` : event.description;
-    text += `\n備註：${shortDesc}`;
+    text += `
+備註：${shortDesc}`;
   }
 
   const actions: Action[] = [
