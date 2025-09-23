@@ -165,8 +165,7 @@ describe('geminiService', () => {
         .mockResolvedValueOnce({ response: { text: () => JSON.stringify(mockSuccessResponse) } });
 
       const promise = parseTextToCalendarEvent('Some text');
-      // Advance timer to trigger the retry after 2000ms
-      await jest.advanceTimersByTimeAsync(2000);
+      await jest.runAllTimersAsync();
       const result = await promise;
 
       expect(result).toEqual(mockSuccessResponse);
@@ -177,11 +176,8 @@ describe('geminiService', () => {
       const error503 = new Error('Service Unavailable');
       (error503 as any).status = 503;
 
-      // Mock to fail 3 times to match MAX_RETRIES
-      mockGeminiApi.generateContent
-        .mockRejectedValueOnce(error503)
-        .mockRejectedValueOnce(error503)
-        .mockRejectedValueOnce(error503);
+      // Mock to fail all attempts
+      mockGeminiApi.generateContent.mockRejectedValue(error503);
 
       const promise = parseTextToCalendarEvent('Some text');
       await jest.runAllTimersAsync();
@@ -196,10 +192,9 @@ describe('geminiService', () => {
       (error400 as any).status = 400;
 
       mockGeminiApi.generateContent.mockRejectedValue(error400);
-      
-      const result = await parseTextToCalendarEvent('Some text');
 
-      expect(result).toEqual({ error: 'Failed to parse event from text.' });
+      await expect(parseTextToCalendarEvent('Some text')).resolves.toEqual({ error: 'Failed to parse event from text.' });
+
       expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(1);
     });
   });

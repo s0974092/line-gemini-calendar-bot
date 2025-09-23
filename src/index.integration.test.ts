@@ -183,20 +183,24 @@ describe('index.ts 整合測試 (Redis Mocked)', () => {
   const { Readable } = require('stream');
 
 describe('handleFileMessage', () => {
+    const WHITELISTED_USER_ID = 'test';
+
     it('should handle successful CSV upload', async () => {
       const csvContent = `姓名,職位,9/3\n傅臻,全職,早班`;
       const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
       const state = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
-      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      const compositeKey = `state:${WHITELISTED_USER_ID}:${WHITELISTED_USER_ID}`;
+      conversationStateStore.set(compositeKey, JSON.stringify(state));
       const stream = new Readable();
       stream.push(csvContent);
       stream.push(null);
       mockGetMessageContent.mockResolvedValue(stream);
+      const mockEvent = createMockEvent({ type: 'message', message, source: { type: 'user', userId: WHITELISTED_USER_ID } }) as MessageEvent;
 
-      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
+      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID, mockEvent);
 
       expect(mockReplyMessage).toHaveBeenCalled();
-      const finalState = JSON.parse(conversationStateStore.get(WHITELISTED_USER_ID));
+      const finalState = JSON.parse(conversationStateStore.get(compositeKey));
       expect(finalState.step).toBe('awaiting_bulk_confirmation');
     });
 
@@ -204,46 +208,54 @@ describe('handleFileMessage', () => {
       const csvContent = `姓名,職位,9/3\n傅臻,全職,休`;
       const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
       const state = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
-      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      const compositeKey = `state:${WHITELISTED_USER_ID}:${WHITELISTED_USER_ID}`;
+      conversationStateStore.set(compositeKey, JSON.stringify(state));
       const stream = new Readable();
       stream.push(csvContent);
       stream.push(null);
       mockGetMessageContent.mockResolvedValue(stream);
+      const mockEvent = createMockEvent({ type: 'message', message, source: { type: 'user', userId: WHITELISTED_USER_ID } }) as MessageEvent;
 
-      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
+      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID, mockEvent);
 
-      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '在您上傳的 CSV 檔案中，找不到「傅臻」的任何班次，或格式不正確。' });
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '在您上傳的班表檔案中，找不到「傅臻」的任何班次，或格式不正確。' });
     });
 
     it('should handle error during file processing', async () => {
       const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
       const state = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
-      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+      const compositeKey = `state:${WHITELISTED_USER_ID}:${WHITELISTED_USER_ID}`;
+      conversationStateStore.set(compositeKey, JSON.stringify(state));
       mockGetMessageContent.mockRejectedValue(new Error('test error'));
+      const mockEvent = createMockEvent({ type: 'message', message, source: { type: 'user', userId: WHITELISTED_USER_ID } }) as MessageEvent;
 
-      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
+      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID, mockEvent);
 
-      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '處理您上傳的 CSV 檔案時發生錯誤。' });
+      expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', { type: 'text', text: '處理您上傳的檔案時發生錯誤。' });
     });
 
     it('should reply with an error if state is invalid', async () => {
       const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
+      const mockEvent = createMockEvent({ type: 'message', message, source: { type: 'user', userId: WHITELISTED_USER_ID } }) as MessageEvent;
       // No state is set
-      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
+      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID, mockEvent);
       expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', {
         type: 'text',
         text: '感謝您傳送檔案，但我不知道該如何處理它。如果您想建立班表，請先傳送「幫 [姓名] 建立班表」。'
       });
     });
 
-    it('should reply with an error for non-csv files', async () => {
+    it('should reply with an error for non-csv/xlsx files', async () => {
       const message = { id: 'mockMessageId', fileName: 'test.txt' } as FileEventMessage;
       const state = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
-      conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
-      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
+      const compositeKey = `state:${WHITELISTED_USER_ID}:${WHITELISTED_USER_ID}`;
+      conversationStateStore.set(compositeKey, JSON.stringify(state));
+      const mockEvent = createMockEvent({ type: 'message', message, source: { type: 'user', userId: WHITELISTED_USER_ID } }) as MessageEvent;
+
+      await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID, mockEvent);
       expect(mockReplyMessage).toHaveBeenCalledWith('mockReplyToken', {
         type: 'text',
-        text: '檔案格式錯誤，請上傳 .csv 格式的班表檔案。'
+        text: '檔案格式錯誤，請上傳 .csv 或 .xlsx 格式的班表檔案。'
       });
     });
 
@@ -251,14 +263,16 @@ describe('handleFileMessage', () => {
         const csvContent = `姓名,職位,9/3\n傅臻,全職,早班`;
         const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
         const state = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
-        conversationStateStore.set(WHITELISTED_USER_ID, JSON.stringify(state));
+        const compositeKey = `state:${WHITELISTED_USER_ID}:${WHITELISTED_USER_ID}`;
+        conversationStateStore.set(compositeKey, JSON.stringify(state));
         const stream = new Readable();
         stream.push(csvContent);
         stream.push(null);
         mockGetMessageContent.mockResolvedValue(stream);
         mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]); // Single calendar
+        const mockEvent = createMockEvent({ type: 'message', message, source: { type: 'user', userId: WHITELISTED_USER_ID } }) as MessageEvent;
 
-        await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID);
+        await appModule.handleFileMessage('mockReplyToken', message, WHITELISTED_USER_ID, mockEvent);
 
         expect(mockReplyMessage).toHaveBeenCalledWith(
             'mockReplyToken',
@@ -277,6 +291,7 @@ describe('handleFileMessage', () => {
         );
     });
   });
+
 
 
   describe('handlePostbackEvent', () => {
@@ -1043,7 +1058,7 @@ describe('handleFileMessage', () => {
         expect(state.personName).toBe('John Doe');
         expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForCreateSchedule', {
             type: 'text',
-            text: '好的，請現在傳送您要為「John Doe」分析的班表 CSV 檔案。',
+            text: '好的，請現在傳送您要為「John Doe」分析的班表 CSV 或 XLSX 檔案。',
         });
     });
 
@@ -1065,6 +1080,70 @@ describe('handleFileMessage', () => {
         }) as MessageEvent;
         const result2 = await handleEvent(mockMessageEvent2);
         expect(result2).toBeNull();
+    });
+  });
+
+  describe('Context-Aware State Management', () => {
+    const userId = 'context-user';
+    const userChatId = userId; // 1-on-1 chat has chatId === userId
+    const groupId = 'group-123';
+    const replyToken = 'context-reply-token';
+    const { Readable } = require('stream');
+
+    it('should reject file upload in a different context', async () => {
+      // 1. User initiates schedule creation in a 1-on-1 chat
+      const userContextState = { step: 'awaiting_csv_upload', personName: '傅臻', timestamp: Date.now() };
+      const userCompositeKey = `state:${userId}:${userChatId}`;
+      conversationStateStore.set(userCompositeKey, JSON.stringify(userContextState));
+
+      // 2. User uploads the file in a group chat
+      const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
+      const groupEvent = createMockEvent({
+        type: 'message',
+        replyToken,
+        source: { type: 'group', groupId, userId },
+        message,
+      }) as MessageEvent;
+
+      await appModule.handleFileMessage(replyToken, message, userId, groupEvent);
+
+      // 3. Assert that the bot ignores the file because the context (chatId) is wrong
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, {
+        type: 'text',
+        text: '感謝您傳送檔案，但我不知道該如何處理它。如果您想建立班表，請先傳送「幫 [姓名] 建立班表」。'
+      });
+      // Ensure the original state from the 1-on-1 chat was not deleted
+      expect(conversationStateStore.has(userCompositeKey)).toBe(true);
+    });
+
+    it('should process file upload in the correct group context', async () => {
+        // 1. User initiates schedule creation in a group chat
+        const personName = '傅臻';
+        const state = { step: 'awaiting_csv_upload', personName, timestamp: Date.now() };
+        const groupCompositeKey = `state:${userId}:${groupId}`;
+        conversationStateStore.set(groupCompositeKey, JSON.stringify(state));
+
+        // 2. User uploads the file in the same group chat
+        const message = { id: 'mockMessageId', fileName: 'test.csv' } as FileEventMessage;
+        const groupEvent = createMockEvent({
+            type: 'message',
+            replyToken,
+            source: { type: 'group', groupId, userId },
+            message,
+        }) as MessageEvent;
+        
+        const csvContent = `姓名,職位,9/3\n${personName},全職,早班`;
+        const stream = new Readable();
+        stream.push(csvContent);
+        stream.push(null);
+        mockGetMessageContent.mockResolvedValue(stream);
+
+        await appModule.handleFileMessage(replyToken, message, userId, groupEvent);
+
+        // 3. Assert that the file was processed and the state was updated for the group context
+        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.any(Array));
+        const finalState = JSON.parse(conversationStateStore.get(groupCompositeKey));
+        expect(finalState.step).toBe('awaiting_bulk_confirmation');
     });
   });
 

@@ -68,6 +68,7 @@ describe('Multi-turn Conversation Scenarios', () => {
         start: '2025-09-10T15:00:00+08:00',
         end: '2025-09-10T16:00:00+08:00',
       };
+      const mockEvent = { source: { type: 'user', userId } } as any;
   
       // --- Turn 1: User sends time only ---
       const replyToken1 = 'reply-token-1';
@@ -75,14 +76,15 @@ describe('Multi-turn Conversation Scenarios', () => {
       mockClassifyIntent.mockResolvedValue({ type: 'create_event', event: partialEvent });
       mockRedisGet.mockResolvedValue(undefined); // No initial state
   
-      await handleTextMessage(replyToken1, firstMessage, userId);
+      await handleTextMessage(replyToken1, firstMessage, userId, mockEvent);
   
       // Assertions for Turn 1
       expect(mockReplyMessage).toHaveBeenCalledWith(replyToken1, {
         type: 'text',
         text: expect.stringContaining('要安排什麼活動呢？'),
       });
-      expect(mockRedisSet).toHaveBeenCalledWith(userId, expect.any(String), 'EX', 3600);
+      const compositeKey = `state:${userId}:${userId}`;
+      expect(mockRedisSet).toHaveBeenCalledWith(compositeKey, expect.any(String), 'EX', 3600);
       const stateSet = JSON.parse(mockRedisSet.mock.calls[0][1]);
       expect(stateSet.step).toBe('awaiting_event_title');
   
@@ -96,11 +98,11 @@ describe('Multi-turn Conversation Scenarios', () => {
       mockCreateCalendarEvent.mockResolvedValue(createdEvent);
       mockCalendarEventsList.mockResolvedValue({ data: { items: [createdEvent] } });
   
-      await handleTextMessage(replyToken2, secondMessage, userId);
+      await handleTextMessage(replyToken2, secondMessage, userId, mockEvent);
   
       // Assertions for Turn 2
       expect(mockCreateCalendarEvent).toHaveBeenCalledWith(expect.objectContaining({ title: '跟客戶開會' }), 'primary');
-      expect(mockRedisDel).toHaveBeenCalledWith(userId);
+      expect(mockRedisDel).toHaveBeenCalledWith(compositeKey);
       // 驗證最終的確認訊息是透過 replyMessage 發送
       expect(mockReplyMessage).toHaveBeenCalledWith(replyToken2, expect.objectContaining({
         type: 'template',
@@ -118,6 +120,7 @@ describe('Multi-turn Conversation Scenarios', () => {
             end: '2025-09-15T09:30:00+08:00',
             recurrence: 'RRULE:FREQ=WEEKLY;BYDAY=MO',
         };
+        const mockEvent = { source: { type: 'user', userId } } as any;
 
         // --- Turn 1: User sends recurring event info ---
         const replyToken1 = 'reply-token-recur-1';
@@ -125,14 +128,15 @@ describe('Multi-turn Conversation Scenarios', () => {
         mockClassifyIntent.mockResolvedValue({ type: 'create_event', event: initialEvent });
         mockRedisGet.mockResolvedValue(undefined);
 
-        await handleTextMessage(replyToken1, firstMessage, userId);
+        await handleTextMessage(replyToken1, firstMessage, userId, mockEvent);
 
         // Assertions for Turn 1
         expect(mockReplyMessage).toHaveBeenCalledWith(replyToken1, {
             type: 'text',
             text: expect.stringContaining('請問您希望它什麼時候結束？'),
         });
-        expect(mockRedisSet).toHaveBeenCalledWith(userId, expect.any(String), 'EX', 3600);
+        const compositeKey = `state:${userId}:${userId}`;
+        expect(mockRedisSet).toHaveBeenCalledWith(compositeKey, expect.any(String), 'EX', 3600);
         const stateSet = JSON.parse(mockRedisSet.mock.calls[0][1]);
         expect(stateSet.step).toBe('awaiting_recurrence_end_condition');
         expect(stateSet.event).toEqual(initialEvent);
@@ -151,7 +155,7 @@ describe('Multi-turn Conversation Scenarios', () => {
         mockCreateCalendarEvent.mockResolvedValue(createdEvent);
         mockCalendarEventsList.mockResolvedValue({ data: { items: [] } });
 
-        await handleTextMessage(replyToken2, secondMessage, userId);
+        await handleTextMessage(replyToken2, secondMessage, userId, mockEvent);
 
         // Assertions for Turn 2
         expect(mockParseRecurrenceEndCondition).toHaveBeenCalledWith('重複十次', initialEvent.recurrence, initialEvent.start);
@@ -159,7 +163,7 @@ describe('Multi-turn Conversation Scenarios', () => {
             expect.objectContaining({ recurrence: updatedRrule }),
             'primary'
         );
-        expect(mockRedisDel).toHaveBeenCalledWith(userId);
+        expect(mockRedisDel).toHaveBeenCalledWith(compositeKey);
     });
 
     it('should ask for confirmation when a conflicting event is found', async () => {
@@ -171,6 +175,7 @@ describe('Multi-turn Conversation Scenarios', () => {
         end: '2025-10-26T11:00:00+08:00',
       };
       const message = { type: 'text', text: '明天十點有個有衝突的會議' } as any;
+      const mockEvent = { source: { type: 'user', userId } } as any;
       
       const conflictingEvent = {
         summary: '已經存在的會議',
@@ -185,11 +190,12 @@ describe('Multi-turn Conversation Scenarios', () => {
       mockFindEventsInTimeRange.mockResolvedValue([conflictingEvent]); // Simulate finding a conflict
 
       // --- Execute ---
-      await handleTextMessage(replyToken, message, userId);
+      await handleTextMessage(replyToken, message, userId, mockEvent);
 
       // --- Assertions ---
       // 1. State should be set to awaiting_conflict_confirmation
-      expect(mockRedisSet).toHaveBeenCalledWith(userId, expect.any(String), 'EX', 3600);
+      const compositeKey = `state:${userId}:${userId}`;
+      expect(mockRedisSet).toHaveBeenCalledWith(compositeKey, expect.any(String), 'EX', 3600);
       const stateSet = JSON.parse(mockRedisSet.mock.calls[0][1]);
       expect(stateSet.step).toBe('awaiting_conflict_confirmation');
       expect(stateSet.event).toEqual(eventToCreate);
