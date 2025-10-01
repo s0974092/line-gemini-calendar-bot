@@ -408,6 +408,26 @@ describe('index.ts final coverage push', () => {
         expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, { type: 'text', text: '抱歉，更新活動時發生錯誤。' });
     });
 
+    it('should handle modification details and update the event', async () => {
+      const state = { step: 'awaiting_modification_details', eventId: 'event-abc', calendarId: 'primary', chatId: 'chat1' };
+      mockRedisGet.mockResolvedValue(JSON.stringify(state));
+      mockParseEventChanges.mockResolvedValue({ title: 'Updated Meeting Title' });
+      mockUpdateEvent.mockResolvedValue({ summary: 'Updated Meeting Title', htmlLink: 'http://example.com/updated' });
+      
+      const message = { type: 'text', text: '標題改為 Updated Meeting Title' } as TextEventMessage;
+      const mockEvent = createMockEvent(userId, message);
+
+      await handleTextMessage(replyToken, message, userId, mockEvent);
+
+      expect(mockParseEventChanges).toHaveBeenCalledWith('標題改為 Updated Meeting Title');
+      expect(mockUpdateEvent).toHaveBeenCalledWith('event-abc', 'primary', { summary: 'Updated Meeting Title' });
+      expect(mockRedisDel).toHaveBeenCalledWith(`state:${userId}:chat1`);
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.objectContaining({
+        type: 'flex',
+        altText: expect.stringContaining('活動已更新'),
+      }));
+    });
+
     it('should handle DuplicateEventError', async () => {
         mockClassifyIntent.mockResolvedValue({ type: 'create_event', event: { title: 't', start: 'a', end: 'b' } });
         mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);

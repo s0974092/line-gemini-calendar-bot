@@ -204,6 +204,42 @@ describe('index.ts functional tests', () => {
             })
         }));
     });
+
+    it('should ask for modification details when one event is found for update', async () => {
+      const intent = { type: 'update_event', query: 'Meeting', timeMin: 'a', timeMax: 'b', changes: {} };
+      mockClassifyIntent.mockResolvedValue(intent);
+      mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary' }]);
+      const eventToModify = { id: 'event-abc', summary: 'The Meeting', organizer: { email: 'primary' }, start: { dateTime: '2025-01-01T10:00:00Z' }, end: { dateTime: '2025-01-01T11:00:00Z' } };
+      mockSearchEvents.mockResolvedValue({ events: [eventToModify] });
+
+      const message = { type: 'text', text: 'update the meeting' } as TextEventMessage;
+      await index.handleNewCommand(replyToken, message, userId, 'chat1');
+
+      // Check state is set
+      expect(mockRedisSet).toHaveBeenCalledWith(
+        `state:${userId}:chat1`,
+        expect.stringContaining('"step":"awaiting_modification_details"'),
+        'EX',
+        3600
+      );
+      const state = JSON.parse(mockRedisSet.mock.calls[0][1]);
+      expect(state.eventId).toBe('event-abc');
+
+      // Check reply messages
+      const replyArgs = mockReplyMessage.mock.calls[0];
+      expect(replyArgs[0]).toBe(replyToken);
+      expect(replyArgs[1]).toHaveLength(2);
+
+      // Check flex message card
+      const flexMessage = replyArgs[1][0];
+      expect(flexMessage.type).toBe('flex');
+      expect(flexMessage.altText).toContain('活動資訊：The Meeting');
+
+      // Check text prompt
+      const textMessage = replyArgs[1][1];
+      expect(textMessage.type).toBe('text');
+      expect(textMessage.text).toContain('請問您想如何修改這個活動？');
+    });
   });
 
   describe('handlePostbackEvent', () => {
@@ -246,10 +282,60 @@ describe('index.ts functional tests', () => {
             })
         }));
     });
+
+    it('should handle calendar choice postback and create event', async () => {
+      const eventToCreate: CalendarEvent = {
+        title: 'Event From Choice',
+        start: '2025-11-02T12:00:00+08:00',
+        end: '2025-11-02T13:00:00+08:00',
+        allDay: false,
+        recurrence: null,
+        reminder: 30,
+        calendarId: 'cal2'
+      };
+      const state = { step: 'awaiting_calendar_choice', event: eventToCreate, timestamp: Date.now(), chatId: 'chat1' };
+      mockRedisGet.mockResolvedValue(JSON.stringify(state));
+      mockFindEventsInTimeRange.mockResolvedValue([]);
+      mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'cal2', summary: 'Work Calendar' }]);
+      mockCreateCalendarEvent.mockResolvedValue({ htmlLink: 'http://example.com/new_event' });
+
+      const postbackData = new URLSearchParams({ action: 'create_after_choice', calendarId: 'cal2' }).toString();
+      const event = { replyToken, source: { userId }, postback: { data: postbackData } } as PostbackEvent;
+
+      await index.handlePostbackEvent(event);
+
+      expect(mockCreateCalendarEvent).toHaveBeenCalledWith(eventToCreate, 'cal2');
+      expect(mockRedisDel).toHaveBeenCalledWith(expect.stringContaining(userId));
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.objectContaining({
+        type: 'flex',
+      }));
+    });
+
+    it('should set state and ask for details on "modify" postback', async () => {
+      const postbackData = new URLSearchParams({ action: 'modify', eventId: 'event-xyz', calendarId: 'primary' }).toString();
+      const event = { replyToken, source: { userId }, postback: { data: postbackData } } as PostbackEvent;
+
+      await index.handlePostbackEvent(event);
+
+      expect(mockRedisSet).toHaveBeenCalledWith(
+        expect.stringContaining(userId),
+        expect.stringContaining('"step":"awaiting_modification_details"'),
+        'EX',
+        3600
+      );
+      const state = JSON.parse(mockRedisSet.mock.calls[0][1]);
+      expect(state.eventId).toBe('event-xyz');
+      expect(state.calendarId).toBe('primary');
+
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, {
+        type: 'text',
+        text: expect.stringContaining('請問您想如何修改這個活動？'),
+      });
+    });
   });
 
   describe('sendCreationConfirmation', () => {
-    const baseEvent = { title: 'My Test Event', allDay: false, start: '2025-01-20T10:00:00+08:00', end: '2025-01-20T11:00:00+08:00' } as CalendarEvent;
+    const baseEvent: CalendarEvent = { title: 'My Test Event', allDay: false, start: '2025-01-20T10:00:00+08:00', end: '2025-01-20T11:00:00+08:00', recurrence: null, reminder: 30, calendarId: '' };
 
     it('should handle a single matching event from a seeded event', async () => {
         const createdEvent = {
@@ -280,6 +366,52 @@ describe('index.ts functional tests', () => {
                 })
             })
         }));
+    });
+  });
+
+  describe('processCompleteEvent', () => {
+    it('should ask for calendar choice when multiple calendars exist', async () => {
+      const eventToCreate: CalendarEvent = {
+        title: 'Multi-Cal Event',
+        start: '2025-11-01T10:00:00+08:00',
+        end: '2025-11-01T11:00:00+08:00',
+        allDay: false,
+        recurrence: null,
+        reminder: 30,
+        calendarId: ''
+      };
+      const mockCalendars = [
+        { id: 'cal1', summary: 'Personal' },
+        { id: 'cal2', summary: 'Work' },
+      ];
+      mockGetCalendarChoicesForUser.mockResolvedValue(mockCalendars);
+
+      await index.processCompleteEvent(replyToken, eventToCreate, userId, 'chat1');
+
+      // 1. Check if state is correctly set
+      expect(mockRedisSet).toHaveBeenCalledWith(
+        `state:${userId}:chat1`,
+        expect.stringContaining('"step":"awaiting_calendar_choice"'),
+        'EX',
+        3600
+      );
+      const stateSet = JSON.parse(mockRedisSet.mock.calls[0][1]);
+      expect(stateSet.event).toEqual(eventToCreate);
+
+      // 2. Check if the correct question is asked
+      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.objectContaining({
+        type: 'template',
+        altText: '將「Multi-Cal Event」新增至日曆',
+        template: {
+          type: 'buttons',
+          title: '新增活動：Multi-Cal Event',
+          text: expect.stringContaining('請問您要將這個活動新增至哪個日曆？'),
+          actions: [
+            { type: 'postback', label: 'Personal', data: 'action=create_after_choice&calendarId=cal1' },
+            { type: 'postback', label: 'Work', data: 'action=create_after_choice&calendarId=cal2' },
+          ],
+        },
+      }));
     });
   });
 });
