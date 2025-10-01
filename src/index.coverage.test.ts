@@ -160,17 +160,28 @@ describe('index.ts functional tests', () => {
       
       expect(textMessage.text).toContain('為您找到 3 個與「My Query」相關的活動：');
       expect(textMessage.text).toContain('還有更多結果');
-      expect(carouselMessage.template.columns.length).toBe(3);
-      
-      expect(carouselMessage.template.columns[0].title).toBe('Event 1 Title');
-      expect(carouselMessage.template.columns[0].text).toContain('日曆：Personal Calendar');
-      expect(carouselMessage.template.columns[0].actions.length).toBe(3);
 
-      expect(carouselMessage.template.columns[1].title).toBe('Event 2 With A Very Long Title That Shou'.substring(0, 40));
-      expect(carouselMessage.template.columns[1].text).toContain('日曆：Work Calendar');
-      expect(carouselMessage.template.columns[1].actions.length).toBe(3);
+      expect(carouselMessage.type).toBe('flex');
+      expect(carouselMessage.altText).toBe('為您找到 3 個活動');
+      const carousel = carouselMessage.contents;
+      expect(carousel.type).toBe('carousel');
+      expect(carousel.contents.length).toBe(3);
 
-      expect(carouselMessage.template.columns[2].actions.length).toBe(2);
+      // Check bubble 1
+      const bubble1 = carousel.contents[0];
+      expect(bubble1.header.contents[0].text).toBe('日曆：Personal Calendar');
+      expect(bubble1.body.contents[0].text).toBe('Event 1 Title');
+      expect(bubble1.footer.contents.length).toBe(2);
+
+      // Check bubble 2 (truncation)
+      const bubble2 = carousel.contents[1];
+      expect(bubble2.header.contents[0].text).toBe('日曆：Work Calendar');
+      expect(bubble2.body.contents[0].text).toBe('Event 2 With A Very Long Title That Should Be Truncated');
+      expect(bubble2.footer.contents.length).toBe(2);
+
+      // Check bubble 3 (no link)
+      const bubble3 = carousel.contents[2];
+      expect(bubble3.footer.contents.length).toBe(1);
     });
   });
 
@@ -211,10 +222,27 @@ describe('index.ts functional tests', () => {
         expect(mockCreateCalendarEvent).toHaveBeenCalledWith(eventToCreate, 'cal99');
         expect(mockRedisDel).toHaveBeenCalledWith(userId);
         expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.objectContaining({
-            template: expect.objectContaining({
-                title: '✅ Final Event',
-                text: expect.stringContaining('已新增至「Chosen Calendar」日曆'),
-                actions: [expect.objectContaining({ uri: 'final_link' })]
+            type: 'flex',
+            altText: '活動已新增：Final Event',
+            contents: expect.objectContaining({
+                type: 'bubble',
+                header: expect.objectContaining({
+                    contents: expect.arrayContaining([
+                        expect.objectContaining({ text: '✅ 已新增至「Chosen Calendar」' })
+                    ])
+                }),
+                body: expect.objectContaining({
+                    contents: expect.arrayContaining([
+                        expect.objectContaining({ text: 'Final Event' })
+                    ])
+                }),
+                footer: expect.objectContaining({
+                    contents: expect.arrayContaining([
+                        expect.objectContaining({
+                            action: expect.objectContaining({ uri: 'final_link' })
+                        })
+                    ])
+                })
             })
         }));
     });
@@ -236,8 +264,20 @@ describe('index.ts functional tests', () => {
         await index.sendCreationConfirmation(userId, baseEvent, createdEvent);
 
         expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.objectContaining({
-            template: expect.objectContaining({
-                text: expect.stringContaining('已新增至「My Calendar」日曆')
+            type: 'flex',
+            altText: '活動「My Test Event」已新增',
+            contents: expect.objectContaining({
+                type: 'bubble',
+                header: expect.objectContaining({
+                    contents: expect.arrayContaining([
+                        expect.objectContaining({ text: '✅ 已新增至「My Calendar」' })
+                    ])
+                }),
+                body: expect.objectContaining({
+                    contents: expect.arrayContaining([
+                        expect.objectContaining({ text: 'My Test Event' })
+                    ])
+                })
             })
         }));
     });

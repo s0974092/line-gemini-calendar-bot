@@ -70,9 +70,11 @@ describe('Ambiguous Intent Handling', () => {
       expect(mockSearchEvents).toHaveBeenCalled();
       const reply = mockReplyMessage.mock.calls[0][1];
       expect(reply[0].text).toBe('我找到了多個符合條件的活動，請選擇您想修改的是哪一個？');
-      expect(reply[1].template.type).toBe('carousel');
-      expect(reply[1].template.columns.length).toBe(2);
-      expect(reply[1].template.columns[0].title).toBe('會議 1');
+      expect(reply[1].type).toBe('flex');
+      expect(reply[1].altText).toBe('請選擇要修改的活動');
+      expect(reply[1].contents.type).toBe('carousel');
+      expect(reply[1].contents.contents).toHaveLength(2);
+      expect(reply[1].contents.contents[0].header.contents[0].text).toBe('會議 1');
     });
 
     it('should ask for clarification when multiple events match a delete request', async () => {

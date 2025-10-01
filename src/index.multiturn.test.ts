@@ -105,8 +105,13 @@ describe('Multi-turn Conversation Scenarios', () => {
       expect(mockRedisDel).toHaveBeenCalledWith(compositeKey);
       // 驗證最終的確認訊息是透過 replyMessage 發送
       expect(mockReplyMessage).toHaveBeenCalledWith(replyToken2, expect.objectContaining({
-        type: 'template',
-        altText: '活動「跟客戶開會」已新增',
+        type: 'flex',
+        altText: '活動已新增：跟客戶開會',
+        contents: expect.objectContaining({
+          type: 'bubble',
+          header: expect.any(Object),
+          body: expect.any(Object),
+        })
       }));
       // 確保沒有呼叫 pushMessage
       expect(mockPushMessage).not.toHaveBeenCalled();

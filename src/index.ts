@@ -14,6 +14,9 @@ import {
   FileEventMessage,
   TextMessage,
   Action,
+  FlexMessage,
+  FlexBubble,
+  FlexCarousel,
 } from '@line/bot-sdk';
 import { calendar_v3 } from 'googleapis';
 import {
@@ -474,7 +477,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
       console.log(`Handling query_event with query: "${intent.query}" from ${intent.timeMin} to ${intent.timeMax}`);
       
       const calendarChoicesQuery = await getCalendarChoicesForUser();
-      const allCalendarIdsQuery = calendarChoicesQuery.map(c => c.id!);
+      const allCalendarIdsQuery = calendarChoicesQuery.map(c => c.id!); 
       const searchPromises = allCalendarIdsQuery.map(calId => 
         searchEvents(calId, intent.timeMin, intent.timeMax, intent.query)
       );
@@ -495,7 +498,6 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
     case 'update_event':
       console.log(`Handling update_event with query: "${intent.query}" from ${intent.timeMin} to ${intent.timeMax}`);
       
-      // 1. 尋找要更新的事件
       const calendarChoicesUpdate = await getCalendarChoicesForUser();
       const allCalendarIdsUpdate = calendarChoicesUpdate.map(c => c.id!); 
       
@@ -504,30 +506,31 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
       );
       const eventsToUpdate = (await Promise.all(updateSearchPromises)).flatMap(r => r.events);
 
-      // 2. 處理不同情況
       if (eventsToUpdate.length === 0) {
         return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，找不到您想修改的活動。' });
       }
 
-      // 如果使用者直接提供了修改內容，則直接更新唯一的事件
       if (eventsToUpdate.length === 1 && intent.changes && Object.keys(intent.changes).length > 0) {
         const eventToUpdate = eventsToUpdate[0];
         const eventId = eventToUpdate.id!;
         const calendarId = eventToUpdate.organizer!.email!;
         
         try {
-          // 建立一個 patch 物件，將 title 對應到 summary
           const eventPatch: calendar_v3.Schema$Event = {};
           const { title, start, end, location, description } = intent.changes;
           if (title) eventPatch.summary = title;
           if (start) eventPatch.start = { dateTime: start, timeZone: 'Asia/Taipei' };
-          if (end) eventPatch.end = { dateTime: end, timeZone: 'Asia/Taipei' };
+          if (end) eventPatch.end = { dateTime: start, timeZone: 'Asia/Taipei' };
           if (location) eventPatch.location = location;
           if (description) eventPatch.description = description;
 
           const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
-          // 建立並傳送包含地點和描述的確認卡片
-          const confirmationMessage = createEventCard(updatedEvent, `✅ 活動已更新`, false, '活動已更新');
+          const flexBubble = createEventFlexBubble(updatedEvent, '✅ 活動已更新');
+          const confirmationMessage: FlexMessage = {
+            type: 'flex',
+            altText: `活動已更新：${updatedEvent.summary || ''}`.substring(0, 400),
+            contents: flexBubble,
+          };
           return lineClient.replyMessage(replyToken, confirmationMessage);
         } catch (error) {
           console.error('Error updating event directly:', error);
@@ -535,30 +538,33 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
         }
       }
 
-      // 如果找到多個事件，或未提供具體修改，則要求使用者確認
       if (eventsToUpdate.length > 1) {
-        await setConversationState(userId, { step: 'awaiting_modification_details', eventId: '', timestamp: Date.now() });
-        const eventCards = eventsToUpdate.slice(0, 10).map(event => createEventCard(event, event.summary!, true));
-        const carousel: TemplateMessage = {
-          type: 'template',
+        await setConversationState(userId, { step: 'awaiting_modification_details', eventId: '', timestamp: Date.now() }, chatId);
+        const bubbles = eventsToUpdate.slice(0, 10).map(event => createEventFlexBubble(event, event.summary!));
+        const carousel: FlexMessage = {
+          type: 'flex',
           altText: '請選擇要修改的活動',
-          template: {
+          contents: {
             type: 'carousel',
-            columns: eventCards
+            contents: bubbles,
           }
         };
         return lineClient.replyMessage(replyToken, [{type: 'text', text: '我找到了多個符合條件的活動，請選擇您想修改的是哪一個？'}, carousel]);
       }
 
-      // 如果只找到一個事件，要求進行修改
       const eventToModify = eventsToUpdate[0];
       await setConversationState(userId, {
         step: 'awaiting_modification_details',
         eventId: eventToModify.id!,
         calendarId: eventToModify.organizer!.email!,
         timestamp: Date.now(),
-      });
-      const eventCard = createEventCard(eventToModify, '我找到了這個活動');
+      }, chatId);
+      const flexBubble = createEventFlexBubble(eventToModify, '我找到了這個活動');
+      const eventCard: FlexMessage = {
+        type: 'flex',
+        altText: `活動資訊：${eventToModify.summary || ''}`.substring(0, 400),
+        contents: flexBubble,
+      };
       return lineClient.replyMessage(replyToken, [
         eventCard,
         { type: 'text', text: '請問您想如何修改這個活動？\n(例如：標題改為「團隊午餐」、時間改到明天下午一點、地點在公司餐廳、加上備註「討論Q4規劃」)\n\n若不需要做修改，請輸入「取消」。' }
@@ -567,7 +573,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
     case 'delete_event':
       console.log(`Handling delete_event with query: "${intent.query}" from ${intent.timeMin} to ${intent.timeMax}`);
       const calendarChoicesDelete = await getCalendarChoicesForUser();
-      const allCalendarIdsDelete = calendarChoicesDelete.map(c => c.id!);
+      const allCalendarIdsDelete = calendarChoicesDelete.map(c => c.id!); 
       
       const deleteSearchPromises = allCalendarIdsDelete.map(calId => 
         searchEvents(calId, intent.timeMin, intent.timeMax, intent.query)
@@ -592,7 +598,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
 
         const template: TemplateMessage = {
           type: 'template',
-          altText: `確認刪除活動： ${event.summary}`,
+          altText: `確認刪除活動： ${event.summary}`.substring(0, 400),
           template: {
             type: 'confirm',
             text: `您確定要刪除活動「${event.summary}」嗎？此操作無法復原。`,
@@ -605,11 +611,9 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
         return lineClient.replyMessage(replyToken, template);
       }
 
-      // If multiple events are found, ask user to be more specific or use the query tool.
       return lineClient.replyMessage(replyToken, { type: 'text', text: '我找到了多個符合條件的活動，請您先用「查詢」功能找到想刪除的活動，然後再點擊該活動下方的「刪除」按鈕。' });
 
     case 'create_schedule':
-      // This is handled by a separate trigger in handleTextMessage, but we keep it here for completeness.
       console.log(`Request to create schedule for "${intent.personName}". Awaiting CSV file.`);
       await setConversationState(userId, {
         step: 'awaiting_csv_upload',
@@ -624,15 +628,12 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
     case 'incomplete':
     case 'unknown':
       console.log(`Intent was incomplete or unknown for text: "${intent.originalText}"`);
-      // We can choose to either ignore it or ask for clarification.
-      // For now, we'll just log it and do nothing, to avoid being too noisy.
       return null;
     default:
       console.log(`Unhandled intent type: ${(intent as any).type}`);
       return null;
   }
 };
-
 // --- New helper function to handle query results ---
 const handleQueryResults = async (replyToken: string, query: string, events: calendar_v3.Schema$Event[], hasMore: boolean) => {
   if (!events || events.length === 0) {
@@ -650,41 +651,19 @@ const handleQueryResults = async (replyToken: string, query: string, events: cal
   const calendarNameMap = new Map<string, string>();
   calendarChoices.forEach(c => calendarNameMap.set(c.id!, c.summary!));
 
-  const columns = events.slice(0, 10).map(event => {
-    const title = event.summary || '無標題';
-    const timeInfo = formatEventTime({
-      start: event.start?.dateTime || event.start?.date || undefined,
-      end: event.end?.dateTime || event.end?.date || undefined,
-      allDay: !!event.start?.date,
-    });
-
+  const bubbles = events.slice(0, 10).map(event => {
     const calendarId = event.organizer?.email;
     const calendarName = calendarId ? calendarNameMap.get(calendarId) || calendarId : '未知日曆';
-
-    const textWithCalendar = `日曆：${calendarName}\n${timeInfo}`;
-    const actions: Action[] = [];
-    if (event.id && calendarId) {
-        actions.push({ type: 'postback', label: '修改活動', data: `action=modify&eventId=${event.id}&calendarId=${calendarId}` });
-        actions.push({ type: 'postback', label: '刪除活動', data: `action=delete&eventId=${event.id}&calendarId=${calendarId}` });
-    }
-
-    if (event.htmlLink) {
-        actions.push({ type: 'uri', label: '在日曆中查看', uri: event.htmlLink });
-    }
-
-    return {
-      title: title.substring(0, 40),
-      text: textWithCalendar.substring(0, 60),
-      actions: actions,
-    };
+    const headerText = `日曆：${calendarName}`.substring(0, 100); // Flex header has limit
+    return createEventFlexBubble(event, headerText);
   });
 
-  const carouselTemplate: TemplateMessage = {
-    type: 'template',
+  const carouselMessage: FlexMessage = {
+    type: 'flex',
     altText: `為您找到 ${events.length} 個活動`,
-    template: {
-      type: 'carousel',
-      columns: columns,
+    contents: {
+        type: 'carousel',
+        contents: bubbles,
     },
   };
 
@@ -698,7 +677,7 @@ const handleQueryResults = async (replyToken: string, query: string, events: cal
 
   return lineClient.replyMessage(replyToken, [
     { type: 'text', text: replyText },
-    carouselTemplate
+    carouselMessage
   ]);
 };
 
@@ -808,29 +787,27 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
     const createdEvent = await createCalendarEvent(event, singleCalendarId);
     await clearConversationState(userId, chatId);
     
-    const timeInfo = formatEventTime(event);
     const allCalendars = await getCalendarChoicesForUser();
     const calendarName = allCalendars.find(c => c.id === singleCalendarId)?.summary || singleCalendarId;
 
-
-    const confirmationTemplate: TemplateMessage = {
-      type: 'template',
-      altText: `活動「${event.title}」已新增`,
-      template: {
-        type: 'buttons',
-        title: `✅ ${event.title.substring(0, 40)}`,
-        text: `時間：${timeInfo}\n已新增至「${calendarName}」日曆`.substring(0, 160),
-        actions: [{
-          type: 'uri',
-          label: '在 Google 日曆中查看',
-          uri: createdEvent.htmlLink!
-        }]
-      }
+    // Combine original data with created event data for a complete view
+    const displayEvent = {
+      ...createdEvent,
+      summary: event.title, // Ensure original title is used
+      location: event.location,
+      description: event.description,
     };
-    // 修正：直接使用 replyToken 回覆，而不是 pushMessage
+
+    const flexBubble = createEventFlexBubble(displayEvent, `✅ 已新增至「${calendarName}」`);
+    const confirmationMessage: FlexMessage = {
+      type: 'flex',
+      altText: `活動已新增：${event.title}`.substring(0, 400),
+      contents: flexBubble,
+    };
+    
     return fromImage 
-      ? lineClient.pushMessage(userId, confirmationTemplate) 
-      : lineClient.replyMessage(replyToken, confirmationTemplate);
+      ? lineClient.pushMessage(userId, confirmationMessage) 
+      : lineClient.replyMessage(replyToken, confirmationMessage);
 
   } catch (error) {
     return handleCreateError(error, userId);
@@ -848,16 +825,13 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
   console.log(`Handling postback: ${postback.data} in chat ${chatId}`);
   const params = new URLSearchParams(postback.data);
   const action = params.get('action');
-  // 取得特定於此聊天室的狀態
   const currentState = await getConversationState(userId, chatId);
 
   if (action === 'cancel') {
-    // 清除特定於此聊天室的狀態
     await clearConversationState(userId, chatId);
     return lineClient.replyMessage(replyToken, { type: 'text', text: '好的，操作已取消。' });
   }
 
-  // 新：當使用者選擇日曆後
   if (action === 'create_after_choice') {
     if (!currentState || !currentState.event || currentState.step !== 'awaiting_calendar_choice') {
       return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，您的請求已逾時或無效，請重新操作。' });
@@ -870,7 +844,6 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       return lineClient.replyMessage(replyToken, { type: 'text', text: '錯誤：找不到日曆資訊，請重新操作。' });
     }
 
-    // 在特定日曆上檢查衝突
     const conflictingEvents = await findEventsInTimeRange(eventToCreate.start!, eventToCreate.end!, calendarId);
     const actualConflicts = conflictingEvents.filter(
       (e) => !(e.summary === eventToCreate.title && new Date(e.start?.dateTime || '').getTime() === new Date(eventToCreate.start!).getTime())
@@ -896,30 +869,21 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       return lineClient.replyMessage(replyToken, template);
     }
 
-    // 沒有衝突，直接建立
     try {
       const createdEvent = await createCalendarEvent(eventToCreate, calendarId);
       await clearConversationState(userId, chatId);
 
-      const timeInfo = formatEventTime(eventToCreate);
       const allCalendars = await getCalendarChoicesForUser();
       const calendarName = allCalendars.find(c => c.id === calendarId)?.summary || calendarId;
 
-      const confirmationTemplate: TemplateMessage = {
-        type: 'template',
-        altText: `活動「${eventToCreate.title}」已新增`,
-        template: {
-          type: 'buttons',
-          title: `✅ ${eventToCreate.title.substring(0, 40)}`,
-          text: `時間：${timeInfo}\n已新增至「${calendarName}」日曆`.substring(0, 160),
-          actions: [{
-            type: 'uri',
-            label: '在 Google 日曆中查看',
-            uri: createdEvent.htmlLink!
-          }]
-        }
+      const displayEvent = { ...createdEvent, summary: eventToCreate.title, location: eventToCreate.location, description: eventToCreate.description };
+      const flexBubble = createEventFlexBubble(displayEvent, `✅ 已新增至「${calendarName}」`);
+      const confirmationMessage: FlexMessage = {
+        type: 'flex',
+        altText: `活動已新增：${eventToCreate.title}`.substring(0, 400),
+        contents: flexBubble,
       };
-      return lineClient.replyMessage(replyToken, confirmationTemplate);
+      return lineClient.replyMessage(replyToken, confirmationMessage);
 
     } catch (error) {
       await clearConversationState(userId, chatId);
@@ -1009,31 +973,22 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
     
     try {
       const createdEvent = await createCalendarEvent(eventToCreate as CalendarEvent, calendarId);
-      const timeInfo = formatEventTime(eventToCreate as CalendarEvent);
       const allCalendars = await getCalendarChoicesForUser();
       const calendarName = allCalendars.find(c => c.id === calendarId)?.summary || calendarId;
 
-      const confirmationTemplate: TemplateMessage = {
-        type: 'template',
-        altText: `活動「${eventToCreate.title}」已新增`,
-        template: {
-          type: 'buttons',
-          title: `✅ ${eventToCreate.title!.substring(0, 40)}`,
-          text: `時間：${timeInfo}\n已新增至「${calendarName}」日曆`.substring(0, 160),
-          actions: [{
-            type: 'uri',
-            label: '在 Google 日曆中查看',
-            uri: createdEvent.htmlLink!
-          }]
-        }
+      const displayEvent = { ...createdEvent, summary: eventToCreate.title, location: eventToCreate.location, description: eventToCreate.description };
+      const flexBubble = createEventFlexBubble(displayEvent, `✅ 已新增至「${calendarName}」`);
+      const confirmationMessage: FlexMessage = {
+        type: 'flex',
+        altText: `活動已新增：${eventToCreate.title}`.substring(0, 400),
+        contents: flexBubble,
       };
-      return lineClient.replyMessage(replyToken, confirmationTemplate);
+      return lineClient.replyMessage(replyToken, confirmationMessage);
     } catch (error) {
         return handleCreateError(error, userId);
     }
   }
 
-  // 處理 CSV 批次建立與分批處理
   if (action === 'createAllShifts') {
     if (!currentState || !currentState.events || currentState.step !== 'awaiting_bulk_confirmation') {
       return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，您的批次新增請求已逾時或無效，請重新上傳檔案。' });
@@ -1045,16 +1000,14 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
         return lineClient.replyMessage(replyToken, { type: 'text', text: '錯誤：找不到日曆資訊，請重新操作。' });
     }
 
-    // 立即回覆使用者，避免 LINE Webhook 逾時
     await lineClient.replyMessage(replyToken, { type: 'text', text: `收到！正在為您處理 ${events.length} 個活動...` });
 
-    // 在背景中處理事件建立，並確保 Serverless 函數會等待此程序完成
     try {
       let successCount = 0;
       let duplicateCount = 0;
       let failureCount = 0;
       const batchSize = 10;
-      const delay = 500; // 每批之間延遲 500 毫秒
+      const delay = 500;
       let targetEvents: CalendarEvent[] = [];
       if (calendarId === 'all') {
         const calendarChoices = await getCalendarChoicesForUser();
@@ -1080,7 +1033,8 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
           } else {
             if (result.reason instanceof DuplicateEventError) {
               duplicateCount++;
-            } else {
+            }
+            else {
               failureCount++;
               console.error('Failed to create bulk event:', result.reason);
             }
@@ -1093,18 +1047,15 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       }
 
       const summaryMessage = `批次匯入完成：\n- 新增成功 ${successCount} 件\n- 已存在 ${duplicateCount} 件\n- 失敗 ${failureCount} 件`;
-      // FIX: Send push message back to the original chat (group or user)
       await lineClient.pushMessage(chatId, { type: 'text', text: summaryMessage });
     } catch (error) {
         console.error("Error during batch createAllShifts:", error);
-        // FIX: Send push message back to the original chat (group or user)
         await lineClient.pushMessage(chatId, { type: 'text', text: '批次新增過程中發生未預期的錯誤。' });
     } finally {
-      // 無論成功或失敗，最後都清除對話狀態
       await clearConversationState(userId, chatId);
     }
 
-    return null; // Webhook 應回傳 200 OK，實際的結果是透過 pushMessage 傳送
+    return null;
   }
 
   return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，發生了未知的錯誤。' });
@@ -1139,7 +1090,12 @@ const { eventId, calendarId, chatId } = currentState;
 
     const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
 
-    const confirmationMessage = createEventCard(updatedEvent, '✅ 活動已更新', false, '活動已更新');
+    const flexBubble = createEventFlexBubble(updatedEvent, '✅ 活動已更新');
+    const confirmationMessage: FlexMessage = {
+      type: 'flex',
+      altText: `活動已更新：${updatedEvent.summary || ''}`.substring(0, 400),
+      contents: flexBubble,
+    };
     return lineClient.replyMessage(replyToken, confirmationMessage);
 
   } catch (error) {
@@ -1252,44 +1208,31 @@ const sendCreationConfirmation = async (userId: string, event: CalendarEvent, cr
 
   if (foundInstances.length === 1) {
     const item = foundInstances[0];
-    const timeInfo = formatEventTime(event);
-    const buttonTemplate: TemplateMessage = {
-      type: 'template',
+    const displayEvent = { ...(createdEventForSeed || event), htmlLink: item.htmlLink };
+    const flexBubble = createEventFlexBubble(displayEvent, `✅ 已新增至「${item.calName}」`);
+    const confirmationMessage: FlexMessage = {
+      type: 'flex',
       altText: `活動「${event.title}」已新增`,
-      template: {
-        type: 'buttons',
-        title: `✅ ${event.title.substring(0, 40)}`,
-        text: `時間：${timeInfo}\n已新增至「${item.calName}」日曆`.substring(0, 160),
-        actions: [{
-          type: 'uri',
-          label: '在 Google 日曆中查看',
-          uri: item.htmlLink!
-        }]
-      }
+      contents: flexBubble,
     };
-    return lineClient.pushMessage(userId, buttonTemplate);
+    return lineClient.pushMessage(userId, confirmationMessage);
   }
 
   // 超過 1 個，使用輪播
   const headerText = `✅ 活動「${event.title}」目前存在於 ${foundInstances.length} 個日曆中。`;
-  const timeInfo = formatEventTime(event);
-  const carouselTemplate: TemplateMessage = {
-    type: 'template',
+  const bubbles = foundInstances.map(item => {
+    const tempEvent = { ...event, htmlLink: item.htmlLink };
+    return createEventFlexBubble(tempEvent, `存在於「${item.calName}」`);
+  });
+  const carouselMessage: FlexMessage = {
+    type: 'flex',
     altText: '查看新建立的活動',
-    template: {
+    contents: {
       type: 'carousel',
-      columns: foundInstances.slice(0, 10).map(item => ({
-        title: event.title.substring(0, 40),
-        text: `時間：${timeInfo}\n存在於「${item.calName}」日曆`.substring(0, 60),
-        actions: [{
-          type: 'uri',
-          label: '在 Google 日曆中查看',
-          uri: item.htmlLink!
-        }]
-      }))
+      contents: bubbles,
     }
   };
-  return lineClient.pushMessage(userId, [ { type: 'text', text: headerText }, carouselTemplate ]);
+  return lineClient.pushMessage(userId, [ { type: 'text', text: headerText }, carouselMessage ]);
 };
 
 const handleCreateError = (error: any, userId: string) => {
@@ -1316,70 +1259,170 @@ const handleCreateError = (error: any, userId: string) => {
   return lineClient.pushMessage(userId, { type: 'text', text: '抱歉，新增日曆事件時發生錯誤。' });
 };
 
-// --- 新增：建立事件卡片的輔助函式 ---
-const createEventCard = (event: calendar_v3.Schema$Event, title: string, forCarousel: boolean = false, altText?: string): any => {
+// --- 全新的 Flex Message 卡片產生器 ---
+const createEventFlexBubble = (event: any, headerText: string): FlexBubble => {
   const eventTitle = event.summary || '無標題';
+
+  // Handle both string and object formats for start/end
+  const getEventTime = (time: any): string | undefined => {
+    if (typeof time === 'string') return time;
+    if (typeof time === 'object' && time !== null) {
+      return time.dateTime || time.date;
+    }
+    return undefined;
+  };
+
   const timeInfo = formatEventTime({
-    start: event.start?.dateTime || event.start?.date || undefined,
-    end: event.end?.dateTime || event.end?.date || undefined,
-    allDay: !!event.start?.date,
+    start: getEventTime(event.start),
+    end: getEventTime(event.end),
+    allDay: !!(event.start && event.start.date),
   });
 
-  let text: string;
-
-  if (forCarousel) {
-    // 對於輪播，包含更多細節，然後截斷至 60 個字元。
-    let fullText = `標題：${eventTitle}
-時間：${timeInfo}`;
-    if (event.location) {
-      fullText += `
-地點：${event.location}`;
-    }
-    if (event.description) {
-      const shortDesc = event.description.length > 30 ? `${event.description.substring(0, 30)}...` : event.description;
-      fullText += `
-備註：${shortDesc}`;
-    }
-    text = fullText;
-  } else {
-    // 對於按鈕模板，只包含標題和時間，以避免超過 160 個字元的限制。
-    text = `標題：${eventTitle}
-時間：${timeInfo}`;
-  }
-
-  const actions: Action[] = [
+  const bodyContents: any[] = [
     {
-      type: 'postback',
-      label: '修改活動',
-      data: `action=modify&eventId=${event.id}&calendarId=${event.organizer?.email}`
+      type: 'text',
+      text: eventTitle,
+      weight: 'bold',
+      size: 'xl',
+      wrap: true,
     },
     {
-      type: 'uri',
-      label: '在日曆中查看',
-      uri: event.htmlLink!
-    },
-    
+      type: 'text',
+      text: timeInfo,
+      size: 'md',
+      color: '#666666',
+      margin: 'md',
+      wrap: true,
+    }
   ];
 
-  if (forCarousel) {
-    return {
-      title: eventTitle.substring(0, 40),
-      text: text.substring(0, 60), // 輪播文字限制為 60
-      actions: actions,
-    };
+  if (event.location) {
+    bodyContents.push({
+      type: 'separator',
+      margin: 'xl',
+    });
+    bodyContents.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'lg',
+      spacing: 'sm',
+      contents: [
+        {
+          type: 'box',
+          layout: 'baseline',
+          spacing: 'sm',
+          contents: [
+            {
+              type: 'text',
+              text: '地點',
+              color: '#aaaaaa',
+              size: 'sm',
+              flex: 1,
+            },
+            {
+              type: 'text',
+              text: event.location,
+              wrap: true,
+              color: '#666666',
+              size: 'sm',
+              flex: 4,
+            },
+          ],
+        },
+      ],
+    });
   }
 
+  if (event.description) {
+    bodyContents.push({
+      type: 'separator',
+      margin: 'xl',
+    });
+    bodyContents.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'lg',
+      spacing: 'sm',
+      contents: [
+        {
+          type: 'box',
+          layout: 'baseline',
+          spacing: 'sm',
+          contents: [
+            {
+              type: 'text',
+              text: '備註',
+              color: '#aaaaaa',
+              size: 'sm',
+              flex: 1,
+            },
+            {
+              type: 'text',
+              text: event.description,
+              wrap: true,
+              color: '#666666',
+              size: 'sm',
+              flex: 4,
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  const footerActions: Action[] = [];
+  if (event.id && event.organizer?.email) {
+    footerActions.push({
+      type: 'postback',
+      label: '修改活動',
+      data: `action=modify&eventId=${event.id}&calendarId=${event.organizer.email}`
+    });
+  }
+  if (event.htmlLink) {
+    footerActions.push({
+      type: 'uri',
+      label: '在日曆中查看',
+      uri: event.htmlLink
+    });
+  }
+
+
   return {
-    type: 'template',
-    altText: altText || `活動資訊：${eventTitle}`,
-    template: {
-      type: 'buttons',
-      title: title.substring(0, 40),
-      text: text.substring(0, 160), // 按鈕模板文字限制為 160
-      actions: actions,
-    }
-  } as TemplateMessage;
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [
+        {
+          type: 'text',
+          text: headerText,
+          weight: 'bold',
+          color: '#1DB446',
+          size: 'sm',
+        },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      contents: bodyContents,
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      spacing: 'sm',
+      contents: footerActions.map(action => ({
+        type: 'button',
+        style: 'link',
+        height: 'sm',
+        action: action,
+      })),
+      flex: 0,
+    },
+  };
 };
+
+
 
 
 // --- 本地開發 & Vercel 進入點 ---
