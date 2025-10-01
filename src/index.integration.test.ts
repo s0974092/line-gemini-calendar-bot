@@ -1,6 +1,6 @@
 
 
-import { Client, FileEventMessage, MessageEvent, PostbackEvent, TextEventMessage, WebhookEvent } from '@line/bot-sdk';
+import { Client, FileEventMessage, FlexBubble, FlexMessage, MessageEvent, PostbackEvent, TextEventMessage, WebhookEvent } from '@line/bot-sdk';
 import { CalendarEvent, Intent } from './services/geminiService';
 
 // Mock external dependencies
@@ -580,19 +580,20 @@ describe('handleFileMessage', () => {
       const replyArgs = mockReplyMessage.mock.calls[0];
       expect(replyArgs[0]).toBe('replyTokenForCreateAfterChoice');
       
-      const templateMessage = replyArgs[1];
-      expect(templateMessage.type).toBe('template');
-      expect(templateMessage.altText).toBe(`活動「${eventData.title}」已新增`);
+      const flexMessage = replyArgs[1] as FlexMessage;
+      expect(flexMessage.type).toBe('flex');
+      expect(flexMessage.altText).toBe(`活動已新增：${eventData.title}`);
       
-      const template = templateMessage.template;
-      expect(template.title).toContain(eventData.title);
-      expect(template.text).toContain('時間：');
-      expect(template.text).toContain(`已新增至「${calendarName}」日曆`);
+      const bubble = flexMessage.contents as FlexBubble;
+      const header = bubble.header?.contents[0] as any;
+      expect(header.text).toContain(`已新增至「${calendarName}」`);
       
-      const action = template.actions[0];
-      expect(action.type).toBe('uri');
-      expect(action.label).toBe('在 Google 日曆中查看');
-      expect(action.uri).toBe(createdEvent.htmlLink);
+      const body = bubble.body?.contents[0] as any;
+      expect(body.text).toBe(eventData.title);
+
+      const footer = bubble.footer?.contents[0] as any;
+      expect(footer.action.type).toBe('uri');
+      expect(footer.action.uri).toBe(createdEvent.htmlLink);
 
       // 4. 確保沒有多餘的 pushMessage
       expect(mockPushMessage).not.toHaveBeenCalled();
@@ -658,8 +659,8 @@ describe('handleFileMessage', () => {
         expect(mockCreateCalendarEvent).toHaveBeenCalledWith(eventData, 'primary');
         // 驗證最終的確認訊息是透過 replyMessage 發送
         expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForForceCreate', expect.objectContaining({
-            type: 'template',
-            altText: '活動「Forced Event」已新增',
+            type: 'flex',
+            altText: expect.stringContaining('活動已新增：Forced Event'),
         }));
         // 確保沒有呼叫 pushMessage
         expect(mockPushMessage).not.toHaveBeenCalled();
@@ -720,10 +721,12 @@ describe('handleFileMessage', () => {
       expect(mockReplyMessage).toHaveBeenCalledTimes(1);
       const replyArgs = mockReplyMessage.mock.calls[0];
       expect(replyArgs[0]).toBe('replyTokenForUpdate');
-      const templateMessage = replyArgs[1];
-      expect(templateMessage.type).toBe('template');
-      expect(templateMessage.altText).toBe('活動已更新');
-      expect(templateMessage.template.text).toContain(updatedEvent.summary);
+      const flexMessage = replyArgs[1] as FlexMessage;
+      expect(flexMessage.type).toBe('flex');
+      expect(flexMessage.altText).toBe(`活動已更新：${updatedEvent.summary}`);
+      const bubble = flexMessage.contents as FlexBubble;
+      const body = bubble.body!.contents[0] as any;
+      expect(body.text).toBe(updatedEvent.summary);
       expect(mockPushMessage).not.toHaveBeenCalled();
     });
 
@@ -761,10 +764,12 @@ describe('handleFileMessage', () => {
       expect(mockReplyMessage).toHaveBeenCalledTimes(1);
       const replyArgs = mockReplyMessage.mock.calls[0];
       expect(replyArgs[0]).toBe('replyTokenForModification');
-      const templateMessage = replyArgs[1];
-      expect(templateMessage.type).toBe('template');
-      expect(templateMessage.altText).toBe('活動已更新');
-      expect(templateMessage.template.text).toContain(changes.title);
+      const flexMessage = replyArgs[1] as FlexMessage;
+      expect(flexMessage.type).toBe('flex');
+      expect(flexMessage.altText).toBe(`活動已更新：${updatedEvent.summary}`);
+      const bubble = flexMessage.contents as FlexBubble;
+      const body = bubble.body!.contents[0] as any;
+      expect(body.text).toBe(changes.title);
       expect(mockPushMessage).not.toHaveBeenCalled();
     });
 
@@ -804,10 +809,23 @@ describe('handleFileMessage', () => {
       
       expect(mockReplyMessage).toHaveBeenCalledTimes(1);
       const replyArgs = mockReplyMessage.mock.calls[0];
-      const templateMessage = replyArgs[1];
-      expect(templateMessage.type).toBe('template');
-      expect(templateMessage.template.text).not.toContain(`地點：`);
-      expect(templateMessage.template.text).not.toContain(`備註：`);
+      const flexMessage = replyArgs[1] as FlexMessage;
+      expect(flexMessage.type).toBe('flex');
+
+      const bubble = flexMessage.contents as any;
+      const bodyContents = bubble.body!.contents as any[];
+
+      // Find location component and verify
+      const locationBox = bodyContents.find(c => c.type === 'box' && c.contents[0].contents[0].text === '地點');
+      expect(locationBox).toBeDefined();
+      const locationTextComponent = locationBox.contents[0].contents[1];
+      expect(locationTextComponent.text).toBe(changes.location);
+
+      // Find description component and verify
+      const descriptionBox = bodyContents.find(c => c.type === 'box' && c.contents[0].contents[0].text === '備註');
+      expect(descriptionBox).toBeDefined();
+      const descriptionTextComponent = descriptionBox.contents[0].contents[1];
+      expect(descriptionTextComponent.text).toBe(changes.description);
     });
 
     it('handleTextMessage - 應該在對話狀態中透過輸入「取消」來清除狀態', async () => {
@@ -845,8 +863,8 @@ describe('handleFileMessage', () => {
 
         const reply = mockReplyMessage.mock.calls[0][1];
         expect(reply[0].type).toBe('text');
-        expect(reply[1].type).toBe('template');
-        expect(reply[1].template.type).toBe('carousel');
+        expect(reply[1].type).toBe('flex');
+        expect((reply[1] as FlexMessage).contents.type).toBe('carousel');
     });
 
     it('delete_event: should ask for clarification if multiple events are found', async () => {
@@ -973,8 +991,8 @@ describe('handleFileMessage', () => {
         expect(mockReplyMessage).toHaveBeenCalledWith('replyTokenForQueryFound', [
             { type: 'text', text: '為您找到 1 個與「Test Event」相關的活動：' },
             expect.objectContaining({
-              type: 'template',
-              template: expect.objectContaining({
+              type: 'flex',
+              contents: expect.objectContaining({
                 type: 'carousel',
               }),
             }),

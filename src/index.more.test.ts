@@ -455,7 +455,23 @@ describe('index.ts final coverage push', () => {
         }));
         const { processCompleteEvent } = require('./index');
         await processCompleteEvent(replyToken, {}, userId, chatId);
-        expect(mockPushMessage).toHaveBeenCalledWith(userId, { type: 'text', text: '抱歉，新增日曆事件時發生錯誤。' });
+        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.objectContaining({
+            type: 'flex',
+            altText: '活動已新增：undefined',
+            contents: expect.objectContaining({
+                type: 'bubble',
+                header: expect.objectContaining({
+                    contents: expect.arrayContaining([
+                        expect.objectContaining({ text: '✅ 已新增至「Primary」' })
+                    ])
+                }),
+                body: expect.objectContaining({
+                    contents: expect.arrayContaining([
+                        expect.objectContaining({ text: '無標題' })
+                    ])
+                })
+            })
+        }));
     });
 
     it('should handle generic error in handleRecurrenceResponse', async () => {

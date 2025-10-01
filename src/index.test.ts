@@ -138,34 +138,16 @@ describe('index.ts unit tests', () => {
       await handleNewCommand(replyToken, message, userId);
 
       expect(mockSearchEvents).toHaveBeenCalled();
-      expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, [
-        { type: 'text', text: '我找到了多個符合條件的活動，請選擇您想修改的是哪一個？' },
-        {
-            type: 'template',
-            altText: '請選擇要修改的活動',
-            template: {
-                type: 'carousel',
-                columns: [
-                    {
-                        title: '會議 1',
-                        text: '標題：會議 1\n時間：2025/01/01 10:00 - 11:00',
-                        actions: [
-                            { type: 'postback', label: '修改活動', data: 'action=modify&eventId=event1&calendarId=primary' },
-                            { type: 'uri', label: '在日曆中查看', uri: 'http://go.co/event1' },
-                        ]
-                    },
-                    {
-                        title: '會議 2',
-                        text: '標題：會議 2\n時間：2025/01/01 14:00 - 15:00',
-                        actions: [
-                            { type: 'postback', label: '修改活動', data: 'action=modify&eventId=event2&calendarId=primary' },
-                            { type: 'uri', label: '在日曆中查看', uri: 'http://go.co/event2' },
-                        ]
-                    }
-                ]
-            }
-        }
-      ]);
+      const [sentReplyToken, sentMessages] = mockReplyMessage.mock.calls[0];
+      expect(sentReplyToken).toBe(replyToken);
+      expect(sentMessages[0]).toEqual({ type: 'text', text: '我找到了多個符合條件的活動，請選擇您想修改的是哪一個？' });
+      const flexMessage = sentMessages[1];
+      expect(flexMessage.type).toBe('flex');
+      expect(flexMessage.altText).toBe('請選擇要修改的活動');
+      expect(flexMessage.contents.type).toBe('carousel');
+      expect(flexMessage.contents.contents).toHaveLength(2);
+      expect(flexMessage.contents.contents[0].header.contents[0].text).toBe('會議 1');
+      expect(flexMessage.contents.contents[1].header.contents[0].text).toBe('會議 2');
     });
 
     it('should ask for clarification when multiple events match a delete request', async () => {
@@ -246,8 +228,13 @@ describe('index.ts unit tests', () => {
       expect(mockRedisDel).toHaveBeenCalledWith(compositeKey);
       // 驗證最終的確認訊息是透過 replyMessage 發送
       expect(mockReplyMessage).toHaveBeenCalledWith(replyToken2, expect.objectContaining({
-        type: 'template',
-        altText: '活動「跟客戶開會」已新增',
+        type: 'flex',
+        altText: '活動已新增：跟客戶開會',
+        contents: expect.objectContaining({
+          type: 'bubble',
+          header: expect.any(Object),
+          body: expect.any(Object),
+        })
       }));
       // 確保沒有呼叫 pushMessage
       expect(mockPushMessage).not.toHaveBeenCalled();
