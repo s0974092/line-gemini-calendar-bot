@@ -1112,9 +1112,9 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
 
 // --- 7. 輔助函式 ---
 const handleEventUpdate = async (replyToken: string, message: TextEventMessage, userId: string, currentState: ConversationState) => {
-  const { eventId, calendarId } = currentState;
+const { eventId, calendarId, chatId } = currentState;
   if (!eventId || !calendarId) {
-    await clearConversationState(userId);
+    await clearConversationState(userId, chatId);
     return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，請求已逾時，找不到要修改的活動。' });
   }
 
@@ -1126,7 +1126,7 @@ const handleEventUpdate = async (replyToken: string, message: TextEventMessage, 
     return lineClient.replyMessage(replyToken, { type: 'text', text: '抱歉，我不太理解您的修改指令，可以請您說得更清楚一點嗎？\n(例如：標題改為「團隊午餐」、時間改到明天下午一點、地點在公司餐廳、加上備註「討論Q4規劃」)\n\n若不需要做修改，請輸入「取消」。' });
   }
 
-  await clearConversationState(userId);
+  await clearConversationState(userId, chatId);
   try {
     // 建立一個 patch 物件，將 title 對應到 summary
     const eventPatch: calendar_v3.Schema$Event = {};
@@ -1325,16 +1325,26 @@ const createEventCard = (event: calendar_v3.Schema$Event, title: string, forCaro
     allDay: !!event.start?.date,
   });
 
-  let text = `標題：${eventTitle}
+  let text: string;
+
+  if (forCarousel) {
+    // 對於輪播，包含更多細節，然後截斷至 60 個字元。
+    let fullText = `標題：${eventTitle}
 時間：${timeInfo}`;
-  if (event.location) {
-    text += `
+    if (event.location) {
+      fullText += `
 地點：${event.location}`;
-  }
-  if (event.description) {
-    const shortDesc = event.description.length > 30 ? `${event.description.substring(0, 30)}...` : event.description;
-    text += `
+    }
+    if (event.description) {
+      const shortDesc = event.description.length > 30 ? `${event.description.substring(0, 30)}...` : event.description;
+      fullText += `
 備註：${shortDesc}`;
+    }
+    text = fullText;
+  } else {
+    // 對於按鈕模板，只包含標題和時間，以避免超過 160 個字元的限制。
+    text = `標題：${eventTitle}
+時間：${timeInfo}`;
   }
 
   const actions: Action[] = [
@@ -1354,7 +1364,7 @@ const createEventCard = (event: calendar_v3.Schema$Event, title: string, forCaro
   if (forCarousel) {
     return {
       title: eventTitle.substring(0, 40),
-      text: text.substring(0, 60),
+      text: text.substring(0, 60), // 輪播文字限制為 60
       actions: actions,
     };
   }
@@ -1365,7 +1375,7 @@ const createEventCard = (event: calendar_v3.Schema$Event, title: string, forCaro
     template: {
       type: 'buttons',
       title: title.substring(0, 40),
-      text: text.substring(0, 160),
+      text: text.substring(0, 160), // 按鈕模板文字限制為 160
       actions: actions,
     }
   } as TemplateMessage;

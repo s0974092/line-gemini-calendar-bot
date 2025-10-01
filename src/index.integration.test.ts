@@ -806,8 +806,8 @@ describe('handleFileMessage', () => {
       const replyArgs = mockReplyMessage.mock.calls[0];
       const templateMessage = replyArgs[1];
       expect(templateMessage.type).toBe('template');
-      expect(templateMessage.template.text).toContain(`地點：${changes.location}`);
-      expect(templateMessage.template.text).toContain(`備註：${changes.description}`);
+      expect(templateMessage.template.text).not.toContain(`地點：`);
+      expect(templateMessage.template.text).not.toContain(`備註：`);
     });
 
     it('handleTextMessage - 應該在對話狀態中透過輸入「取消」來清除狀態', async () => {
