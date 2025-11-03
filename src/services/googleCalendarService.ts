@@ -107,12 +107,22 @@ export async function getCalendarChoicesForUser(): Promise<CalendarChoice[]> {
  * @throws {DuplicateEventError} 如果已存在相同事件。
  */
 export const createCalendarEvent = async (event: CalendarEvent, calendarId: string): Promise<calendar_v3.Schema$Event> => {
+  const isDateOnly = (dateString: string) => /^\d{4}-\d{2}-\d{2}$/.test(dateString);
+  let timeMin = event.start;
+  let timeMax = event.end;
+  if (isDateOnly(timeMin)) {
+    timeMin = new Date(timeMin).toISOString();
+  }
+  if (isDateOnly(timeMax)) {
+    timeMax = new Date(timeMax).toISOString();
+  }
+
   // 步驟 1: 檢查重複項
   const existingEvents = await calendar.events.list({
     calendarId: calendarId,
     q: event.title, // 按標題搜尋
-    timeMin: event.start,
-    timeMax: event.end,
+    timeMin: timeMin,
+    timeMax: timeMax,
     singleEvents: true,
   });
 
@@ -166,10 +176,7 @@ export const createCalendarEvent = async (event: CalendarEvent, calendarId: stri
     },
     recurrence: event.recurrence ? [event.recurrence] : [],
     reminders: {
-      useDefault: false,
-      overrides: [
-        { method: 'popup', minutes: event.reminder || 30 },
-      ],
+      useDefault: true,
     },
   };
 
@@ -195,23 +202,39 @@ export const createCalendarEvent = async (event: CalendarEvent, calendarId: stri
  * @param calendarId 要搜尋的日曆 ID。
  * @returns 在該範圍內的事件陣列。
  */
-export const findEventsInTimeRange = async (
-  timeMin: string,
-  timeMax: string,
-  calendarId: string
-): Promise<calendar_v3.Schema$Event[]> => {
+export const findEventsInTimeRange = async (calendarId: string, startTime: string, endTime: string, title: string) => {
   try {
+    console.log(`[findEventsInTimeRange] Initial values: startTime=${startTime}, endTime=${endTime}`);
+    // Helper to check if a string is a date-only format (YYYY-MM-DD)
+    const isDateOnly = (dateString: string) => /^\d{4}-\d{2}-\d{2}$/.test(dateString);
+
+    let timeMin = startTime;
+    let timeMax = endTime;
+
+    // If start time is a date-only string, convert it to a full RFC3339 timestamp for the API
+    if (isDateOnly(startTime)) {
+      console.log(`[findEventsInTimeRange] Converting date-only startTime: ${startTime}`);
+      timeMin = new Date(startTime).toISOString();
+      console.log(`[findEventsInTimeRange] Converted timeMin: ${timeMin}`);
+    }
+    if (isDateOnly(endTime)) {
+      console.log(`[findEventsInTimeRange] Converting date-only endTime: ${endTime}`);
+      timeMax = new Date(endTime).toISOString();
+      console.log(`[findEventsInTimeRange] Converted timeMax: ${timeMax}`);
+    }
+
+    console.log(`[findEventsInTimeRange] Final API params: timeMin=${timeMin}, timeMax=${timeMax}`);
     const response = await calendar.events.list({
-      calendarId: calendarId,
+      calendarId,
       timeMin: timeMin,
       timeMax: timeMax,
-      singleEvents: true, // 將重複事件展開為單一實例
-      orderBy: 'startTime',
+      q: title,
+      singleEvents: true,
     });
     return response.data.items || [];
   } catch (error) {
     console.error('Error finding events in time range:', error);
-    throw new Error('Failed to find events in the specified time range.');
+    throw error;
   }
 };
 

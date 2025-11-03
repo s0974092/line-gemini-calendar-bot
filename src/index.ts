@@ -25,6 +25,7 @@ import {
   CalendarEvent,
   parseRecurrenceEndCondition,
   parseEventChanges,
+  translateRruleToHumanReadable,
 } from './services/geminiService';
 import { 
   calendar, 
@@ -40,6 +41,9 @@ import {
 import { Stream } from 'stream';
 import { parseCsvToEvents, parseXlsxToEvents } from './utils/excelParser';
 import Redis from 'ioredis'; // Import Redis
+import { formatEventTime } from './utils/time';
+import { handleCreateError } from './utils/errorHandler';
+import { createEventFlexBubble } from './utils/flexMessages';
 
 // --- 1. 設定 ---
 if (!process.env.LINE_CHANNEL_SECRET || !process.env.LINE_CHANNEL_ACCESS_TOKEN) {
@@ -525,7 +529,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
           if (description) eventPatch.description = description;
 
           const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
-          const flexBubble = createEventFlexBubble(updatedEvent, '✅ 活動已更新');
+          const flexBubble = await createEventFlexBubble(updatedEvent, '✅ 活動已更新');
           const confirmationMessage: FlexMessage = {
             type: 'flex',
             altText: `活動已更新：${updatedEvent.summary || ''}`.substring(0, 400),
@@ -540,7 +544,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
 
       if (eventsToUpdate.length > 1) {
         await setConversationState(userId, { step: 'awaiting_modification_details', eventId: '', timestamp: Date.now() }, chatId);
-        const bubbles = eventsToUpdate.slice(0, 10).map(event => createEventFlexBubble(event, event.summary!));
+        const bubbles = await Promise.all(eventsToUpdate.slice(0, 10).map(async event => await createEventFlexBubble(event, event.summary!)));
         const carousel: FlexMessage = {
           type: 'flex',
           altText: '請選擇要修改的活動',
@@ -559,7 +563,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
         calendarId: eventToModify.organizer!.email!,
         timestamp: Date.now(),
       }, chatId);
-      const flexBubble = createEventFlexBubble(eventToModify, '我找到了這個活動');
+      const flexBubble = await createEventFlexBubble(eventToModify, '我找到了這個活動');
       const eventCard: FlexMessage = {
         type: 'flex',
         altText: `活動資訊：${eventToModify.summary || ''}`.substring(0, 400),
@@ -651,12 +655,12 @@ const handleQueryResults = async (replyToken: string, query: string, events: cal
   const calendarNameMap = new Map<string, string>();
   calendarChoices.forEach(c => calendarNameMap.set(c.id!, c.summary!));
 
-  const bubbles = events.slice(0, 10).map(event => {
+  const bubbles = await Promise.all(events.slice(0, 10).map(async event => {
     const calendarId = event.organizer?.email;
     const calendarName = calendarId ? calendarNameMap.get(calendarId) || calendarId : '未知日曆';
     const headerText = `日曆：${calendarName}`.substring(0, 100); // Flex header has limit
-    return createEventFlexBubble(event, headerText);
-  });
+    return await createEventFlexBubble(event, headerText);
+  }));
 
   const carouselMessage: FlexMessage = {
     type: 'flex',
@@ -731,14 +735,16 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
   // 新流程：如果有多個日曆，先讓使用者選擇
   if (calendarChoices.length > 1) {
     await setConversationState(userId, { step: 'awaiting_calendar_choice', event, timestamp: Date.now() }, chatId);
-    const timeInfo = formatEventTime(event);
+    const timeDetails = await formatEventTime(event);
+    const timeInfo = timeDetails.primary; // Use only the primary, more concise time info for the prompt
+
     const actions = calendarChoices.map((choice: CalendarChoice) => ({
       type: 'postback' as const,
       label: choice.summary.substring(0, 20),
       data: new URLSearchParams({ action: 'create_after_choice', calendarId: choice.id! }).toString(),
     }));
 
-    const templateText = `時間：${timeInfo}\n請問您要將這個活動新增至哪個日曆？`;
+    const templateText = `時間：${timeInfo}\n新增至哪個日曆？`;
     const template: TemplateMessage = {
       type: 'template',
       altText: `將「${event.title}」新增至日曆`,
@@ -755,7 +761,7 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
   
   // 單一日曆流程：直接檢查衝突並建立
   const singleCalendarId = calendarChoices[0]?.id || 'primary';
-  const conflictingEvents = await findEventsInTimeRange(event.start, event.end, singleCalendarId);
+  const conflictingEvents = await findEventsInTimeRange(singleCalendarId, event.start, event.end, event.title);
 
   const actualConflicts = conflictingEvents.filter(
     (e) => !(e.summary === event.title && new Date(e.start?.dateTime || '').getTime() === new Date(event.start).getTime())
@@ -798,7 +804,7 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
       description: event.description,
     };
 
-    const flexBubble = createEventFlexBubble(displayEvent, `✅ 已新增至「${calendarName}」`);
+    const flexBubble = await createEventFlexBubble(displayEvent, `✅ 已新增至「${calendarName}」`);
     const confirmationMessage: FlexMessage = {
       type: 'flex',
       altText: `活動已新增：${event.title}`.substring(0, 400),
@@ -810,7 +816,7 @@ const processCompleteEvent = async (replyToken: string, event: CalendarEvent, us
       : lineClient.replyMessage(replyToken, confirmationMessage);
 
   } catch (error) {
-    return handleCreateError(error, userId);
+    return handleCreateError(error, userId, lineClient);
   }
 };
 
@@ -844,7 +850,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       return lineClient.replyMessage(replyToken, { type: 'text', text: '錯誤：找不到日曆資訊，請重新操作。' });
     }
 
-    const conflictingEvents = await findEventsInTimeRange(eventToCreate.start!, eventToCreate.end!, calendarId);
+    const conflictingEvents = await findEventsInTimeRange(calendarId, eventToCreate.start!, eventToCreate.end!, eventToCreate.title!);
     const actualConflicts = conflictingEvents.filter(
       (e) => !(e.summary === eventToCreate.title && new Date(e.start?.dateTime || '').getTime() === new Date(eventToCreate.start!).getTime())
     );
@@ -877,7 +883,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       const calendarName = allCalendars.find(c => c.id === calendarId)?.summary || calendarId;
 
       const displayEvent = { ...createdEvent, summary: eventToCreate.title, location: eventToCreate.location, description: eventToCreate.description };
-      const flexBubble = createEventFlexBubble(displayEvent, `✅ 已新增至「${calendarName}」`);
+      const flexBubble = await createEventFlexBubble(displayEvent, `✅ 已新增至「${calendarName}」`);
       const confirmationMessage: FlexMessage = {
         type: 'flex',
         altText: `活動已新增：${eventToCreate.title}`.substring(0, 400),
@@ -887,7 +893,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
 
     } catch (error) {
       await clearConversationState(userId, chatId);
-      return handleCreateError(error, userId);
+      return handleCreateError(error, userId, lineClient);
     }
   }
 
@@ -977,7 +983,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       const calendarName = allCalendars.find(c => c.id === calendarId)?.summary || calendarId;
 
       const displayEvent = { ...createdEvent, summary: eventToCreate.title, location: eventToCreate.location, description: eventToCreate.description };
-      const flexBubble = createEventFlexBubble(displayEvent, `✅ 已新增至「${calendarName}」`);
+      const flexBubble = await createEventFlexBubble(displayEvent, `✅ 已新增至「${calendarName}」`);
       const confirmationMessage: FlexMessage = {
         type: 'flex',
         altText: `活動已新增：${eventToCreate.title}`.substring(0, 400),
@@ -985,7 +991,7 @@ const handlePostbackEvent = async (event: PostbackEvent) => {
       };
       return lineClient.replyMessage(replyToken, confirmationMessage);
     } catch (error) {
-        return handleCreateError(error, userId);
+        return handleCreateError(error, userId, lineClient);
     }
   }
 
@@ -1090,7 +1096,7 @@ const { eventId, calendarId, chatId } = currentState;
 
     const updatedEvent = await updateEvent(eventId, calendarId, eventPatch);
 
-    const flexBubble = createEventFlexBubble(updatedEvent, '✅ 活動已更新');
+    const flexBubble = await createEventFlexBubble(updatedEvent, '✅ 活動已更新');
     const confirmationMessage: FlexMessage = {
       type: 'flex',
       altText: `活動已更新：${updatedEvent.summary || ''}`.substring(0, 400),
@@ -1104,327 +1110,6 @@ const { eventId, calendarId, chatId } = currentState;
   }
 };
 
-const formatEventTime = (event: Partial<CalendarEvent>): string => {
-  let timeInfo = '';
-  const { start, end, allDay } = event;
-
-  if (!start || !end) return '';
-
-  if (allDay) {
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    if (endDate.toISOString().split('T')[0] !== startDate.toISOString().split('T')[0]) {
-      endDate.setDate(endDate.getDate() - 1);
-    }
-    const startDateStr = startDate.toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Taipei' });
-    if (startDate.toISOString().split('T')[0] === endDate.toISOString().split('T')[0]) {
-      timeInfo = `${startDateStr} (全天)`;
-    } else {
-      const endDateStr = endDate.toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Taipei' });
-      timeInfo = `${startDateStr} 至 ${endDateStr}`;
-    }
-  }
-  else {
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    const startDateStr = startDate.toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Taipei' });
-    const startTimeStr = startDate.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Taipei' });
-    const endDateStr = endDate.toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Taipei' });
-    const endTimeStr = endDate.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Taipei' });
-    if (startDateStr === endDateStr) {
-      timeInfo = `${startDateStr} ${startTimeStr} - ${endTimeStr}`;
-    } else {
-      timeInfo = `${startDateStr} ${startTimeStr} - ${endDateStr} ${endTimeStr}`;
-    }
-  }
-  return timeInfo;
-}
-
-const sendCreationConfirmation = async (userId: string, event: CalendarEvent, createdEventForSeed?: calendar_v3.Schema$Event) => {
-  const allCalendars = await getCalendarChoicesForUser();
-  const calendarNameMap = new Map<string, string>();
-  allCalendars.forEach(c => calendarNameMap.set(c.id!, c.summary!));
-
-  const foundInstances: { calName: string, htmlLink: string | null | undefined }[] = [];
-
-  let searchCalendars = allCalendars;
-  let seededCalName = '';
-
-  if (createdEventForSeed) {
-    const organizerEmail = createdEventForSeed.organizer?.email;
-    if (organizerEmail) {
-      seededCalName = calendarNameMap.get(organizerEmail) || organizerEmail;
-      foundInstances.push({ calName: seededCalName, htmlLink: createdEventForSeed.htmlLink });
-      searchCalendars = allCalendars.filter(c => c.id !== organizerEmail);
-    }
-  }
-
-  const searchPromises = searchCalendars.map(cal => 
-    calendar.events.list({
-      calendarId: cal.id!,
-      q: event.title,
-      timeMin: event.start,
-      timeMax: event.end,
-      singleEvents: true,
-    }).then((res: { data: calendar_v3.Schema$Events }) => ({
-      ...res, 
-      calName: cal.summary! // Pass calendar name through
-    }))
-  );
-
-  const searchResults = await Promise.allSettled(searchPromises);
-
-  for (const result of searchResults) {
-    if (result.status === 'fulfilled' && result.value.data.items) {
-      for (const item of result.value.data.items) {
-        if (item.summary === event.title) {
-          let isMatch = false;
-          if (event.allDay) {
-            if (item.start?.date === event.start.split('T')[0]) {
-              isMatch = true;
-            }
-          } else {
-            if (item.start?.dateTime) {
-              const eventStartTime = new Date(event.start).getTime();
-              const itemStartTime = new Date(item.start.dateTime).getTime();
-              if (eventStartTime === itemStartTime) {
-                isMatch = true;
-              }
-            }
-          }
-
-          if (isMatch) {
-            foundInstances.push({ calName: result.value.calName, htmlLink: item.htmlLink });
-            break; // 在此日曆中找到，移至下一個
-          }
-        }
-      }
-    }
-  }
-
-  if (foundInstances.length === 0) {
-    return lineClient.pushMessage(userId, { type: 'text', text: `✅ 活動「${event.title}」已成功新增，但無法立即取得活動連結。` });
-  }
-
-  if (foundInstances.length === 1) {
-    const item = foundInstances[0];
-    const displayEvent = { ...(createdEventForSeed || event), htmlLink: item.htmlLink };
-    const flexBubble = createEventFlexBubble(displayEvent, `✅ 已新增至「${item.calName}」`);
-    const confirmationMessage: FlexMessage = {
-      type: 'flex',
-      altText: `活動「${event.title}」已新增`,
-      contents: flexBubble,
-    };
-    return lineClient.pushMessage(userId, confirmationMessage);
-  }
-
-  // 超過 1 個，使用輪播
-  const headerText = `✅ 活動「${event.title}」目前存在於 ${foundInstances.length} 個日曆中。`;
-  const bubbles = foundInstances.map(item => {
-    const tempEvent = { ...event, htmlLink: item.htmlLink };
-    return createEventFlexBubble(tempEvent, `存在於「${item.calName}」`);
-  });
-  const carouselMessage: FlexMessage = {
-    type: 'flex',
-    altText: '查看新建立的活動',
-    contents: {
-      type: 'carousel',
-      contents: bubbles,
-    }
-  };
-  return lineClient.pushMessage(userId, [ { type: 'text', text: headerText }, carouselMessage ]);
-};
-
-const handleCreateError = (error: any, userId: string) => {
-  if (error instanceof DuplicateEventError) {
-    const duplicateButtonTemplate: TemplateMessage = {
-      type: 'template',
-      altText: '活動已存在',
-      template: {
-        type: 'buttons',
-        title: '🔍 活動已存在',
-        text: '這個活動先前已經在日曆中囉！',
-        actions: [{
-          type: 'uri',
-          label: '點擊查看',
-          uri: error.htmlLink!
-        }]
-      }
-    };
-    return lineClient.pushMessage(userId, duplicateButtonTemplate);
-  }
-  console.error("!!!!!!!!!! DETAILED ERROR REPORT START !!!!!!!!!!");
-  console.error(JSON.stringify(error, null, 2));
-  console.error("!!!!!!!!!! DETAILED ERROR REPORT END !!!!!!!!!!");
-  return lineClient.pushMessage(userId, { type: 'text', text: '抱歉，新增日曆事件時發生錯誤。' });
-};
-
-// --- 全新的 Flex Message 卡片產生器 ---
-const createEventFlexBubble = (event: any, headerText: string): FlexBubble => {
-  const eventTitle = event.summary || '無標題';
-
-  // Handle both string and object formats for start/end
-  const getEventTime = (time: any): string | undefined => {
-    if (typeof time === 'string') return time;
-    if (typeof time === 'object' && time !== null) {
-      return time.dateTime || time.date;
-    }
-    return undefined;
-  };
-
-  const timeInfo = formatEventTime({
-    start: getEventTime(event.start),
-    end: getEventTime(event.end),
-    allDay: !!(event.start && event.start.date),
-  });
-
-  const bodyContents: any[] = [
-    {
-      type: 'text',
-      text: eventTitle,
-      weight: 'bold',
-      size: 'xl',
-      wrap: true,
-    },
-    {
-      type: 'text',
-      text: timeInfo,
-      size: 'md',
-      color: '#666666',
-      margin: 'md',
-      wrap: true,
-    }
-  ];
-
-  if (event.location) {
-    bodyContents.push({
-      type: 'separator',
-      margin: 'xl',
-    });
-    bodyContents.push({
-      type: 'box',
-      layout: 'vertical',
-      margin: 'lg',
-      spacing: 'sm',
-      contents: [
-        {
-          type: 'box',
-          layout: 'baseline',
-          spacing: 'sm',
-          contents: [
-            {
-              type: 'text',
-              text: '地點',
-              color: '#aaaaaa',
-              size: 'sm',
-              flex: 1,
-            },
-            {
-              type: 'text',
-              text: event.location,
-              wrap: true,
-              color: '#666666',
-              size: 'sm',
-              flex: 4,
-            },
-          ],
-        },
-      ],
-    });
-  }
-
-  if (event.description) {
-    bodyContents.push({
-      type: 'separator',
-      margin: 'xl',
-    });
-    bodyContents.push({
-      type: 'box',
-      layout: 'vertical',
-      margin: 'lg',
-      spacing: 'sm',
-      contents: [
-        {
-          type: 'box',
-          layout: 'baseline',
-          spacing: 'sm',
-          contents: [
-            {
-              type: 'text',
-              text: '備註',
-              color: '#aaaaaa',
-              size: 'sm',
-              flex: 1,
-            },
-            {
-              type: 'text',
-              text: event.description,
-              wrap: true,
-              color: '#666666',
-              size: 'sm',
-              flex: 4,
-            },
-          ],
-        },
-      ],
-    });
-  }
-
-  const footerActions: Action[] = [];
-  if (event.id && event.organizer?.email) {
-    footerActions.push({
-      type: 'postback',
-      label: '修改活動',
-      data: `action=modify&eventId=${event.id}&calendarId=${event.organizer.email}`
-    });
-  }
-  if (event.htmlLink) {
-    footerActions.push({
-      type: 'uri',
-      label: '在日曆中查看',
-      uri: event.htmlLink
-    });
-  }
-
-
-  return {
-    type: 'bubble',
-    header: {
-      type: 'box',
-      layout: 'vertical',
-      contents: [
-        {
-          type: 'text',
-          text: headerText,
-          weight: 'bold',
-          color: '#1DB446',
-          size: 'sm',
-        },
-      ],
-    },
-    body: {
-      type: 'box',
-      layout: 'vertical',
-      contents: bodyContents,
-    },
-    footer: {
-      type: 'box',
-      layout: 'vertical',
-      spacing: 'sm',
-      contents: footerActions.map(action => ({
-        type: 'button',
-        style: 'link',
-        height: 'sm',
-        action: action,
-      })),
-      flex: 0,
-    },
-  };
-};
-
-
-
-
 // --- 本地開發 & Vercel 進入點 ---
 let server: any;
 if (require.main === module) {
@@ -1432,4 +1117,4 @@ if (require.main === module) {
   server = app.listen(port, () => console.log(`[Local] Server is listening on http://localhost:${port}`));
 }
 export default app;
-export { server, redis, handleEvent, handleTextMessage, handleFileMessage, handlePostbackEvent, handleImageMessage, handleRecurrenceResponse, handleTitleResponse, handleEventUpdate, processCompleteEvent, formatEventTime, sendCreationConfirmation, handleCreateError, handleQueryResults, handleNewCommand };
+export { server, redis, handleEvent, handleTextMessage, handleFileMessage, handlePostbackEvent, handleImageMessage, handleRecurrenceResponse, handleTitleResponse, handleEventUpdate, processCompleteEvent, handleQueryResults, handleNewCommand };

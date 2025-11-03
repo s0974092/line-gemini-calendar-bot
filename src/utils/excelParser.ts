@@ -131,7 +131,6 @@ export const universalShiftParser = (data: (string | number)[][], personName: st
           end: `${startDateStr}T${endTime}:00+08:00`,
           allDay: false,
           recurrence: null,
-          reminder: 30,
           calendarId: 'primary',
         });
       }

@@ -182,8 +182,7 @@ describe('googleCalendarService', () => {
         expect(mockGoogleApi.events.insert).toHaveBeenCalledWith(expect.objectContaining({
             requestBody: expect.objectContaining({
                 reminders: {
-                    useDefault: false,
-                    overrides: [{ method: 'popup', minutes: 30 }], // default
+                    useDefault: true,
                 },
             }),
         }));
