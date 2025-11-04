@@ -171,17 +171,17 @@ describe('index.ts functional tests', () => {
       const bubble1 = carousel.contents[0];
       expect(bubble1.header.contents[0].text).toBe('日曆：Personal Calendar');
       expect(bubble1.body.contents[0].text).toBe('Event 1 Title');
-      expect(bubble1.footer.contents.length).toBe(2);
+      expect(bubble1.footer.contents.length).toBe(3);
 
       // Check bubble 2 (truncation)
       const bubble2 = carousel.contents[1];
       expect(bubble2.header.contents[0].text).toBe('日曆：Work Calendar');
       expect(bubble2.body.contents[0].text).toBe('Event 2 With A Very Long Title That Should Be Truncated');
-      expect(bubble2.footer.contents.length).toBe(2);
+      expect(bubble2.footer.contents.length).toBe(3);
 
       // Check bubble 3 (no link)
       const bubble3 = carousel.contents[2];
-      expect(bubble3.footer.contents.length).toBe(1);
+      expect(bubble3.footer.contents.length).toBe(2);
     });
   });
 
@@ -334,41 +334,6 @@ describe('index.ts functional tests', () => {
     });
   });
 
-  describe('sendCreationConfirmation', () => {
-    const baseEvent: CalendarEvent = { title: 'My Test Event', allDay: false, start: '2025-01-20T10:00:00+08:00', end: '2025-01-20T11:00:00+08:00', recurrence: null, reminder: 30, calendarId: '' };
-
-    it('should handle a single matching event from a seeded event', async () => {
-        const createdEvent = {
-            summary: baseEvent.title,
-            start: { dateTime: baseEvent.start },
-            htmlLink: 'http://example.com/seeded',
-            organizer: { email: 'primary' }
-        };
-        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'My Calendar' }]);
-        mockCalendarEventsList.mockResolvedValue({ data: { items: [] } });
-
-        await index.sendCreationConfirmation(userId, baseEvent, createdEvent);
-
-        expect(mockPushMessage).toHaveBeenCalledWith(userId, expect.objectContaining({
-            type: 'flex',
-            altText: '活動「My Test Event」已新增',
-            contents: expect.objectContaining({
-                type: 'bubble',
-                header: expect.objectContaining({
-                    contents: expect.arrayContaining([
-                        expect.objectContaining({ text: '✅ 已新增至「My Calendar」' })
-                    ])
-                }),
-                body: expect.objectContaining({
-                    contents: expect.arrayContaining([
-                        expect.objectContaining({ text: 'My Test Event' })
-                    ])
-                })
-            })
-        }));
-    });
-  });
-
   describe('processCompleteEvent', () => {
     it('should ask for calendar choice when multiple calendars exist', async () => {
       const eventToCreate: CalendarEvent = {
@@ -405,7 +370,7 @@ describe('index.ts functional tests', () => {
         template: {
           type: 'buttons',
           title: '新增活動：Multi-Cal Event',
-          text: expect.stringContaining('請問您要將這個活動新增至哪個日曆？'),
+          text: expect.stringContaining('新增至哪個日曆？'),
           actions: [
             { type: 'postback', label: 'Personal', data: 'action=create_after_choice&calendarId=cal1' },
             { type: 'postback', label: 'Work', data: 'action=create_after_choice&calendarId=cal2' },

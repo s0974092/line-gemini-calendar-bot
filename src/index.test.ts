@@ -68,26 +68,28 @@ jest.mock('ioredis', () => {
     set: mockRedisSet,
     del: mockRedisDel,
     on: mockRedisOn,
-    quit: jest.fn((callback) => callback()),
+    quit: jest.fn((callback) => {
+      if (callback) {
+        callback();
+      }
+      return Promise.resolve('OK');
+    }),
   }));
 });
 
 
 describe('index.ts unit tests', () => {
-  afterAll((done) => {
-    const indexModule = require('./index');
-    if (indexModule.server) {
-      indexModule.server.close(() => {
-        indexModule.redis.quit(done);
-      });
-    } else {
-      indexModule.redis.quit(done);
-    }
-  });
-
-  afterEach(() => {
+  beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    const { redis, server } = require('./index');
+    if (server && server.listening) {
+      await new Promise(resolve => server.close(resolve));
+    }
+    await redis.quit();
   });
 
   describe('Redis Error Handling', () => {

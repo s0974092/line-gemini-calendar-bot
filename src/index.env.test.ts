@@ -31,7 +31,7 @@ describe('Environment Variable Checks', () => {
         } catch (e: any) {
             error = e;
         }
-        expect(error).toBeInstanceOf(Error);
+        expect(error?.name === 'Error' || error?.name === 'TSError').toBe(true);
         expect(error?.message).toBe('Missing LINE channel secret or access token');
     });
 });

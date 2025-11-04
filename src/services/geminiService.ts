@@ -10,8 +10,8 @@ export interface CalendarEvent {
   start: string; // ISO 8601 格式
   end: string;   // ISO 8601 格式
   allDay: boolean;
-  recurrence: string | null;
-  reminder: number; // 以分鐘為單位
+  recurrence: string | string[] | null;
+  reminder?: number; // 以分鐘為單位
   calendarId: string;
   location?: string; // 可選的地點
   description?: string; // 可選的描述
@@ -25,17 +25,24 @@ You are an expert calendar assistant. Your task is to parse a user's natural lan
 - Today's date is: ${currentDate}. Use this as a reference for relative dates like "tomorrow" or "next Friday".
 - The output MUST be a single, valid JSON object. Do not add any extra text, explanations, or markdown formatting around the JSON.
 - Default event duration is 1 hour if no end time is specified.
-- For recurrence, use the RRULE format. Do NOT add COUNT or UNTIL unless the user explicitly specifies it.
 - The timezone is Taipei Standard Time (UTC+8).
-- For single-day all-day events (like holidays or birthdays), the 'end' date in the JSON should be the day after the 'start' date. For example, an all-day event for 2025-10-10 would have start: "2025-10-10T00:00:00+08:00" and end: "2025-10-11T00:00:00+08:00".
-- **All-Day Event End Dates**: For all-day events, the 'end' date must be exclusive. This means the 'end' date should be set to the morning of the day *after* the event concludes.
-  - Example (Single Day): An event on Oct 10th should have an end date of Oct 11th.
-  - Example (Multi-Day): An event from Oct 10th to Oct 12th should have an end date of Oct 13th.
-- **Location and Description**: Also parse any location (e.g., "at 3rd floor meeting room A", "at home") or description/notes (e.g., "bring your laptop", "to discuss the Q3 budget"). If not present, these fields should be null.
 
-# Example:
+# All-Day Events:
+- If the user mentions "全天" (all-day) or "整天" (whole day), you MUST set "allDay" to true.
+- For all-day events, "start" and "end" fields MUST be in "YYYY-MM-DD" format.
+- For a single all-day event, the "end" date must be the day AFTER the "start" date. For example, an all-day event on "2025-11-25" has start: "2025-11-25" and end: "2025-11-26".
+
+# Other Fields:
+- For recurrence, use the RRULE format. Do NOT add COUNT or UNTIL unless the user explicitly specifies it.
+- Also parse any location (e.g., "at 3rd floor meeting room A") or description/notes (e.g., "bring your laptop"). If not present, these fields should be null.
+
+# Examples:
 - User Input: "明天下午三點在會議室B跟客戶開會，討論新的設計稿"
-- Expected JSON: { "title": "跟客戶開會", "start": "2025-09-09T15:00:00+08:00", "end": "2025-09-09T16:00:00+08:00", "allDay": false, "recurrence": null, "reminder": 30, "calendarId": "primary", "location": "會議室B", "description": "討論新的設計稿" }
+  - Expected JSON: { "title": "跟客戶開會", "start": "2025-09-09T15:00:00+08:00", "end": "2025-09-09T16:00:00+08:00", "allDay": false, "recurrence": null, "calendarId": "primary", "location": "會議室B", "description": "討論新的設計稿" }
+- User Input: "11/25 全天 參加研討會"
+  - Expected JSON: { "title": "參加研討會", "start": "2025-11-25", "end": "2025-11-26", "allDay": true, "recurrence": null, "calendarId": "primary", "location": null, "description": null }
+- User Input: "從11/1到11/11每天早上十點檢查EMAIL"
+  - Expected JSON: { "title": "檢查EMAIL", "start": "2025-11-01T10:00:00+08:00", "end": "2025-11-01T11:00:00+08:00", "allDay": false, "recurrence": "RRULE:FREQ=DAILY;UNTIL=20251111T100000Z", "calendarId": "primary", "location": null, "description": null }
 
 # CRITICAL RULE:
   - If the user's input contains both a title (e.g., "會議", "聚餐") and a time, parse both.
@@ -46,11 +53,10 @@ You are an expert calendar assistant. Your task is to parse a user's natural lan
 # JSON Format:
 {
   "title": "string" | null,
-  "start": "YYYY-MM-DDTHH:mm:ss+08:00",
-  "end": "YYYY-MM-DDTHH:mm:ss+08:00",
-  "allDay": false,
+  "start": "YYYY-MM-DDTHH:mm:ss+08:00" | "YYYY-MM-DD",
+  "end": "YYYY-MM-DDTHH:mm:ss+08:00" | "YYYY-MM-DD",
+  "allDay": boolean,
   "recurrence": "RRULE:FREQ=..." | null,
-  "reminder": 30,
   "calendarId": "primary",
   "location": "string" | null,
   "description": "string" | null
@@ -87,7 +93,7 @@ You are an expert assistant for parsing a shift schedule image for an employee n
   "end": "YYYY-MM-DDTHH:mm:ss+08:00",
   "allDay": false,
   "recurrence": null,
-  "reminder": 30,
+
   "calendarId": "primary"
 }
 `;
@@ -115,16 +121,46 @@ You are an expert in iCalendar RRULE format. Your task is to take a user's natur
 
 // --- 將 RRULE 翻譯為人類可讀文字的提示 ---
 const getRruleTranslationPrompt = () => `
-You are an expert in the iCalendar RRULE format. Your task is to translate a given RRULE string into a human-readable, easy-to-understand description in Traditional Chinese.
+You are an expert in the iCalendar RRULE format. Your task is to translate a given RRULE string into a human-readable, easy-to-understand description of its frequency in Traditional Chinese.
 
 # Rules:
-- Analyze the RRULE and describe the recurrence pattern clearly and concisely.
+- Analyze the RRULE and describe ONLY the frequency pattern (e.g., "每日", "每週", "每月").
+- **CRITICAL**: Do NOT include any information about the end condition (like UNTIL or COUNT) in the description. For example, for "FREQ=DAILY;UNTIL=...", just return "每日".
 - The output MUST be a single, valid JSON object with the key "description".
 - Do not add any extra text or explanations.
+
+# Examples:
+- Input: "RRULE:FREQ=DAILY;UNTIL=20251231T000000Z" -> Output: { "description": "每日" }
+- Input: "RRULE:FREQ=WEEKLY;BYDAY=MO,FR" -> Output: { "description": "每週的星期一和星期五" }
+- Input: "RRULE:FREQ=MONTHLY;COUNT=5" -> Output: { "description": "每月" }
 
 # JSON Format:
 {
   "description": "string"
+}
+`;
+
+const getRecurrenceEndDatePrompt = (rrule: string, startDate: string) => `
+You are an expert in the iCalendar RRULE format. Your task is to calculate the end date of a recurring event based on its start date and RRULE.
+
+# Context:
+- Start Date: ${startDate}
+- RRULE: ${rrule}
+
+# Rules:
+- Analyze the RRULE and the start date to determine the final date of the last occurrence.
+- The output MUST be a single, valid JSON object with the key "endDate", in "YYYY-MM-DD" format.
+- The timezone for calculations should be Taipei Standard Time (UTC+8).
+- If the RRULE does not have a COUNT or UNTIL (i.e., it's infinite), return null for the endDate.
+
+# Examples:
+- Start Date: "2025-11-12T10:00:00+08:00", RRULE: "RRULE:FREQ=DAILY;COUNT=3" -> Output: { "endDate": "2025-11-14" }
+- Start Date: "2025-11-10T09:00:00+08:00", RRULE: "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;COUNT=4" -> Output: { "endDate": "2025-11-19" }
+- Start Date: "2025-01-01T10:00:00+08:00", RRULE: "RRULE:FREQ=MONTHLY;COUNT=6" -> Output: { "endDate": "2025-06-01" }
+
+# JSON Format:
+{
+  "endDate": "YYYY-MM-DD" | null
 }
 `;
 
@@ -284,6 +320,16 @@ export const parseEventChanges = async (text: string): Promise<Partial<CalendarE
   }
 };
 
+export const getRecurrenceEndDate = async (rrule: string, startDate: string): Promise<{ endDate: string | null } | { error: string }> => {
+  try {
+    const prompt = getRecurrenceEndDatePrompt(rrule, startDate);
+    // For this prompt, the input text to the model is empty as the context is in the prompt itself.
+    return await callGeminiText(prompt, '');
+  } catch (error) {
+    return { error: 'Failed to calculate recurrence end date.' };
+  }
+}; 
+
 // --- 新增：意圖分類函式 ---
 export type Intent = 
   | { type: 'create_event'; event: Partial<CalendarEvent> }
@@ -303,6 +349,7 @@ You are an expert in understanding user requests for a calendar bot. Your primar
 # Intents:
 1.  **create_event**: User wants to add a new event.
     - Extracts: A full or partial event object, including title, start, end, location, and description.
+    - **All-Day Rule**: If the user mentions a date but no specific time, and the context implies a holiday or day off (e.g., "放假", "補假", "國慶日", or other public holidays), it MUST be treated as an all-day event. For all-day events, 'start' should be the date and 'end' should be the following date (e.g., start: "2025-10-10", end: "2025-10-11").
 2.  **query_event**: User wants to find an existing event.
     - Extracts: A time range (timeMin, timeMax) and a text search keyword (query).
     - **CRITICAL**: The 'query' should be the most likely title of an *existing* event. Strip away conversational filler like "活動", "的活動", "的事", "行程", "幫我找一下", "查一下", "有什麼".
@@ -325,6 +372,7 @@ You are an expert in understanding user requests for a calendar bot. Your primar
 - For "incomplete" or "unknown": { "type": "...", "originalText": "..." }
 
 # Example (Today is 2025-09-08):
+- User: "10月10號國慶日放假" -> { "type": "create_event", "event": { "title": "國慶日放假", "start": "2025-10-10", "end": "2025-10-11", "allDay": true } }
 - User: "把明天下午3點的會議地點改到線上會議室" -> { "type": "update_event", "timeMin": "2025-09-09T15:00:00+08:00", "timeMax": "2025-09-09T16:00:00+08:00", "query": "會議", "changes": { "location": "線上會議室" } }
 - User: "幫我查一下明天下午的會議" -> { "type": "query_event", "timeMin": "2025-09-09T12:00:00+08:00", "timeMax": "2025-09-09T17:00:00+08:00", "query": "會議" }
 - User: "取消明天下午的會議" -> { "type": "delete_event", "timeMin": "2025-09-09T12:00:00+08:00", "timeMax": "2025-09-09T17:00:00+08:00", "query": "會議" }
@@ -338,7 +386,31 @@ export const classifyIntent = async (text: string): Promise<Intent> => {
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
     const prompt = getIntentPrompt(today);
     const result = await callGeminiText(prompt, text);
-    // 基本的驗證，確保回傳的物件有 type 屬性
+
+    if (result && result.type === 'create_event' && result.event) {
+      const event = result.event as Partial<CalendarEvent>;
+      
+      if (text.includes('全天') || text.includes('整天')) {
+        console.log('All-day keyword detected. Forcing event to all-day format.');
+
+        // Regardless of what Gemini returned, if it has a time component,
+        // extract the date part. The start date is the most reliable anchor.
+        if (event.start) {
+            const startDateString = event.start.substring(0, 10); // "YYYY-MM-DD"
+            
+            // Create the end date by adding one day to the start date.
+            const startDate = new Date(startDateString);
+            startDate.setDate(startDate.getDate() + 1);
+            const endDateString = startDate.toISOString().split('T')[0];
+
+            // Force the event object into the correct format.
+            event.allDay = true;
+            event.start = startDateString;
+            event.end = endDateString;
+        }
+      }
+    }
+
     if (result && result.type) {
       return result as Intent;
     }
