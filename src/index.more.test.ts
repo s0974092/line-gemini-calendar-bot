@@ -1,6 +1,136 @@
 import { TextEventMessage, FileEventMessage, WebhookEvent } from '@line/bot-sdk';
 import { Readable } from 'stream';
 
+// Mocks must be declared before they are used in jest.mock()
+const mockReplyMessage = jest.fn();
+const mockPushMessage = jest.fn();
+const mockGetMessageContent = jest.fn();
+const mockClassifyIntent = jest.fn();
+const mockParseEventChanges = jest.fn();
+const mockParseRecurrenceEndCondition = jest.fn();
+const mockCreateCalendarEvent = jest.fn();
+const mockGetCalendarChoicesForUser = jest.fn();
+const mockUpdateEvent = jest.fn();
+const mockDeleteEvent = jest.fn();
+const mockCalendarEventsGet = jest.fn();
+const mockFindEventsInTimeRange = jest.fn();
+const mockSearchEvents = jest.fn();
+const mockParseXlsxToEvents = jest.fn();
+const mockParseCsvToEvents = jest.fn();
+
+jest.mock('@line/bot-sdk', () => ({
+    Client: jest.fn(() => ({
+      replyMessage: mockReplyMessage,
+      pushMessage: mockPushMessage,
+      getMessageContent: mockGetMessageContent,
+    })),
+    middleware: jest.fn(() => (req: any, res: any, next: () => any) => next()),
+}));
+
+jest.mock('./services/geminiService', () => ({
+    classifyIntent: mockClassifyIntent,
+    parseEventChanges: mockParseEventChanges,
+    parseRecurrenceEndCondition: mockParseRecurrenceEndCondition,
+}));
+
+jest.mock('./services/googleCalendarService', () => ({
+    createCalendarEvent: mockCreateCalendarEvent,
+    getCalendarChoicesForUser: mockGetCalendarChoicesForUser,
+    updateEvent: mockUpdateEvent,
+    deleteEvent: mockDeleteEvent,
+    findEventsInTimeRange: mockFindEventsInTimeRange,
+    searchEvents: mockSearchEvents,
+    calendar: {
+        events: {
+          get: mockCalendarEventsGet,
+        },
+      },
+    DuplicateEventError: class extends Error {
+        constructor(message: string, public htmlLink?: string) {
+          super(message);
+        }
+      },
+}));
+
+jest.mock('./utils/excelParser', () => ({
+    parseXlsxToEvents: mockParseXlsxToEvents,
+    parseCsvToEvents: mockParseCsvToEvents,
+}));
+
+const mockReplyMessage = jest.fn();
+const mockPushMessage = jest.fn();
+const mockGetMessageContent = jest.fn();
+const mockClassifyIntent = jest.fn();
+const mockParseEventChanges = jest.fn();
+const mockParseRecurrenceEndCondition = jest.fn();
+const mockCreateCalendarEvent = jest.fn();
+const mockGetCalendarChoicesForUser = jest.fn();
+const mockUpdateEvent = jest.fn();
+const mockDeleteEvent = jest.fn();
+const mockCalendarEventsGet = jest.fn();
+const mockFindEventsInTimeRange = jest.fn();
+const mockSearchEvents = jest.fn();
+const mockParseXlsxToEvents = jest.fn();
+const mockParseCsvToEvents = jest.fn();
+const mockRedisGet = jest.fn();
+const mockRedisSet = jest.fn();
+const mockRedisDel = jest.fn();
+const mockRedisOn = jest.fn();
+
+jest.mock('@line/bot-sdk', () => ({
+    Client: jest.fn(() => ({
+      replyMessage: mockReplyMessage,
+      pushMessage: mockPushMessage,
+      getMessageContent: mockGetMessageContent,
+    })),
+    middleware: jest.fn(() => (req: any, res: any, next: () => any) => next()),
+}));
+
+jest.mock('ioredis', () => {
+  return jest.fn().mockImplementation(() => ({
+    get: mockRedisGet,
+    set: mockRedisSet,
+    del: mockRedisDel,
+    on: mockRedisOn,
+    quit: jest.fn((callback) => {
+      if (callback) {
+        callback();
+      }
+      return Promise.resolve('OK');
+    }),
+  }));
+});
+
+jest.mock('./services/geminiService', () => ({
+    classifyIntent: mockClassifyIntent,
+    parseEventChanges: mockParseEventChanges,
+    parseRecurrenceEndCondition: mockParseRecurrenceEndCondition,
+}));
+
+jest.mock('./services/googleCalendarService', () => ({
+    createCalendarEvent: mockCreateCalendarEvent,
+    getCalendarChoicesForUser: mockGetCalendarChoicesForUser,
+    updateEvent: mockUpdateEvent,
+    deleteEvent: mockDeleteEvent,
+    findEventsInTimeRange: mockFindEventsInTimeRange,
+    searchEvents: mockSearchEvents,
+    calendar: {
+        events: {
+          get: mockCalendarEventsGet,
+        },
+      },
+    DuplicateEventError: class extends Error {
+        constructor(message: string, public htmlLink?: string) {
+          super(message);
+        }
+      },
+}));
+
+jest.mock('./utils/excelParser', () => ({
+    parseXlsxToEvents: mockParseXlsxToEvents,
+    parseCsvToEvents: mockParseCsvToEvents,
+}));
+
 // Helper to create a mock stream
 const createMockStream = (content: string | Buffer) => {
     const stream = new Readable();
@@ -30,103 +160,51 @@ describe('index.ts final coverage push', () => {
     const replyToken = 'test-reply-token';
     const chatId = 'testUser'; // In 1-on-1 chat, chatId is the same as userId
 
-    const mockReplyMessage = jest.fn();
-    const mockPushMessage = jest.fn();
-    const mockGetMessageContent = jest.fn();
-    const mockClassifyIntent = jest.fn();
-    const mockParseEventChanges = jest.fn();
-    const mockParseRecurrenceEndCondition = jest.fn();
-    const mockRedisGet = jest.fn();
-    const mockRedisSet = jest.fn();
-    const mockRedisDel = jest.fn();
-    const mockRedisOn = jest.fn();
-    const mockCreateCalendarEvent = jest.fn();
-    const mockGetCalendarChoicesForUser = jest.fn();
-    const mockUpdateEvent = jest.fn();
-    const mockDeleteEvent = jest.fn();
-    const mockCalendarEventsGet = jest.fn();
-    const mockFindEventsInTimeRange = jest.fn();
-    const mockSearchEvents = jest.fn();
-    const mockParseXlsxToEvents = jest.fn();
-    const mockParseCsvToEvents = jest.fn();
+  let handleTextMessage: any;
+  let handleNewCommand: any;
+  let handlePostbackEvent: any;
+  let handleFileMessage: any;
+  let handleImageMessage: any;
+  let handleRecurrenceResponse: any;
+  let handleTitleResponse: any;
+  let handleEventUpdate: any;
+  let processCompleteEvent: any;
+  let handleQueryResults: any;
+  let sendCreationConfirmation: any;
 
-    beforeAll(() => {
-        jest.mock('@line/bot-sdk', () => ({
-            Client: jest.fn(() => ({
-              replyMessage: mockReplyMessage,
-              pushMessage: mockPushMessage,
-              getMessageContent: mockGetMessageContent,
-            })),
-            middleware: jest.fn(() => (req: any, res: any, next: () => any) => next()),
-          }));
+  beforeEach(() => {
+    jest.resetModules();
+    const indexModule = require('./index');
+    handleTextMessage = indexModule.handleTextMessage;
+    handleNewCommand = indexModule.handleNewCommand;
+    handlePostbackEvent = indexModule.handlePostbackEvent;
+    handleFileMessage = indexModule.handleFileMessage;
+    handleImageMessage = indexModule.handleImageMessage;
+    handleRecurrenceResponse = indexModule.handleRecurrenceResponse;
+    handleTitleResponse = indexModule.handleTitleResponse;
+    handleEventUpdate = indexModule.handleEventUpdate;
+    processCompleteEvent = indexModule.processCompleteEvent;
+    handleQueryResults = indexModule.handleQueryResults;
+    sendCreationConfirmation = indexModule.sendCreationConfirmation;
 
-          jest.mock('./services/geminiService', () => ({
-            classifyIntent: mockClassifyIntent,
-            parseEventChanges: mockParseEventChanges,
-            parseRecurrenceEndCondition: mockParseRecurrenceEndCondition,
-          }));
+    // Default mock implementations
+    mockRedisGet.mockResolvedValue(null);
+    mockGetMessageContent.mockResolvedValue(createMockStream('csv content'));
+    mockParseCsvToEvents.mockReturnValue([{title: 'test event', start: '2025-01-01T10:00:00+08:00', end: '2025-01-01T11:00:00+08:00'}]);
+    mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+    mockFindEventsInTimeRange.mockResolvedValue([]);
+    mockCreateCalendarEvent.mockResolvedValue({ htmlLink: 'link' });
+    mockClassifyIntent.mockResolvedValue({ type: 'unknown' });
+  });
 
-          jest.mock('ioredis', () => {
-            return jest.fn().mockImplementation(() => ({
-              get: mockRedisGet,
-              set: mockRedisSet,
-              del: mockRedisDel,
-              on: mockRedisOn,
-            }));
-          });
+  afterEach(async () => {
+    const { redis, server } = require('./index');
+    if (server && server.listening) {
+      await new Promise(resolve => server.close(resolve));
+    }
+    await redis.quit();
+  });
 
-          jest.mock('./services/googleCalendarService', () => ({
-            createCalendarEvent: mockCreateCalendarEvent,
-            getCalendarChoicesForUser: mockGetCalendarChoicesForUser,
-            updateEvent: mockUpdateEvent,
-            deleteEvent: mockDeleteEvent,
-            findEventsInTimeRange: mockFindEventsInTimeRange,
-            searchEvents: mockSearchEvents,
-            calendar: {
-                events: {
-                  get: mockCalendarEventsGet,
-                },
-              },
-            DuplicateEventError: class extends Error {
-                constructor(message: string, public htmlLink?: string) {
-                  super(message);
-                }
-              },
-        }));
-
-        jest.mock('./utils/excelParser', () => ({
-            parseXlsxToEvents: mockParseXlsxToEvents,
-            parseCsvToEvents: mockParseCsvToEvents,
-        }));
-    });
-
-    beforeEach(() => {
-        const indexModule = require('./index');
-        handleTextMessage = indexModule.handleTextMessage;
-        handleNewCommand = indexModule.handleNewCommand;
-        handlePostbackEvent = indexModule.handlePostbackEvent;
-        handleFileMessage = indexModule.handleFileMessage;
-
-        // Reset mocks to a default working state before each test
-        mockRedisGet.mockResolvedValue(undefined);
-        mockRedisSet.mockResolvedValue('OK');
-        mockRedisDel.mockResolvedValue(1);
-        mockGetMessageContent.mockResolvedValue(createMockStream('csv content'));
-        mockParseCsvToEvents.mockReturnValue([{title: 'test event', start: '2025-01-01T10:00:00+08:00', end: '2025-01-01T11:00:00+08:00'}]);
-        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
-        mockGetMessageContent.mockReset();
-        mockFindEventsInTimeRange.mockResolvedValue([]);
-        mockCreateCalendarEvent.mockResolvedValue({ htmlLink: 'link' });
-        mockClassifyIntent.mockResolvedValue({ type: 'unknown' });
-
-        // Explicitly clear mocks before each test to prevent cross-contamination
-        mockReplyMessage.mockClear();
-        mockPushMessage.mockClear();
-    });
-
-    afterEach(() => {
-        jest.restoreAllMocks();
-    });
 
     it('should ask for title if create_event intent is missing it', async () => {
         mockClassifyIntent.mockResolvedValue({ type: 'create_event', event: { start: '2025-01-01' } });
