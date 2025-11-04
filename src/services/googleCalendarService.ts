@@ -174,7 +174,9 @@ export const createCalendarEvent = async (event: CalendarEvent, calendarId: stri
       date: event.allDay ? event.end.split('T')[0] : undefined,
       timeZone: 'Asia/Taipei',
     },
-    recurrence: event.recurrence ? [event.recurrence] : [],
+    recurrence: event.recurrence
+      ? (Array.isArray(event.recurrence) ? event.recurrence : [event.recurrence])
+      : null,
     reminders: {
       useDefault: true,
     },
@@ -234,7 +236,7 @@ export const findEventsInTimeRange = async (calendarId: string, startTime: strin
     return response.data.items || [];
   } catch (error) {
     console.error('Error finding events in time range:', error);
-    throw error;
+    throw new Error('Failed to find events in the specified time range.');
   }
 };
 
