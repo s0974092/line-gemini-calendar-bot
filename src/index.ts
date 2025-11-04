@@ -598,7 +598,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
           eventId: eventId,
           calendarId: calendarId,
           timestamp: Date.now(),
-        });
+        }, chatId);
 
         const template: TemplateMessage = {
           type: 'template',
@@ -699,7 +699,8 @@ const handleRecurrenceResponse = async (replyToken: string, message: TextEventMe
   const chatId = currentState.chatId!;
 
   try {
-    const recurrenceResult = await parseRecurrenceEndCondition(message.text, originalEvent.recurrence || '', originalEvent.start);
+    const baseRrule = Array.isArray(originalEvent.recurrence) ? originalEvent.recurrence[0] : originalEvent.recurrence || '';
+  const recurrenceResult = await parseRecurrenceEndCondition(message.text, baseRrule as string, originalEvent.start);
 
     if (!recurrenceResult || 'error' in recurrenceResult) {
       currentState.timestamp = Date.now();
