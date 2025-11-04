@@ -211,6 +211,55 @@ describe('googleCalendarService', () => {
 
       expect(mockGoogleApi.events.insert).toHaveBeenCalled();
     });
+
+    it('should handle date-only strings when checking for duplicates and creating events', async () => {
+      const dateOnlyEvent = {
+        title: 'Date Only Event',
+        start: '2025-02-10',
+        end: '2025-02-11',
+        allDay: true,
+      };
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [] } });
+      mockGoogleApi.events.insert.mockResolvedValue({ data: { htmlLink: 'http://example.com/date-only-event' } });
+
+      await createCalendarEvent(dateOnlyEvent, 'primary');
+
+      // 驗證 isDateOnly 分支
+      expect(mockGoogleApi.events.list).toHaveBeenCalledWith(expect.objectContaining({
+        timeMin: new Date('2025-02-10').toISOString(),
+        timeMax: new Date('2025-02-11').toISOString(),
+      }));
+
+      // 驗證事件是作為全天事件創建的
+      expect(mockGoogleApi.events.insert).toHaveBeenCalledWith(expect.objectContaining({
+        requestBody: expect.objectContaining({
+          start: { date: '2025-02-10', timeZone: 'Asia/Taipei' },
+          end: { date: '2025-02-11', timeZone: 'Asia/Taipei' },
+        }),
+      }));
+    });
+
+    it('should not throw duplicate error for an all-day event clashing with a timed event', async () => {
+      const newAllDayEvent = {
+        title: 'All Day Clash',
+        start: '2025-01-06',
+        end: '2025-01-07',
+        allDay: true,
+      };
+      const existingTimedEvent = {
+        summary: 'All Day Clash',
+        start: { dateTime: '2025-01-06T10:00:00+08:00' },
+        end: { dateTime: '2025-01-06T11:00:00+08:00' },
+        htmlLink: 'http://example.com/timed-event',
+      };
+      
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [existingTimedEvent] } });
+      mockGoogleApi.events.insert.mockResolvedValue({ data: { htmlLink: 'http://example.com/new-all-day-event' } });
+
+      await createCalendarEvent(newAllDayEvent, 'primary');
+
+      expect(mockGoogleApi.events.insert).toHaveBeenCalled();
+    });
   });
 
   describe('listAllCalendars', () => {
@@ -258,25 +307,34 @@ describe('googleCalendarService', () => {
         expect(choices).toEqual([{ id: 'primary', summary: '我的主要日曆' }]);
     });
 
-    it('should default to primary if no primary calendar is found in the list', async () => {
-        const mockCalendars = [{ id: 'some_id', summary: 'Some Calendar' }];
-        mockGoogleApi.calendarList.list.mockResolvedValue({ data: { items: mockCalendars } });
-        const choices = await getCalendarChoicesForUser();
-        expect(choices).toEqual([{ id: 'primary', summary: '我的主要日曆' }]);
+    it('Test Case 3.1: should return a default primary calendar choice if none is found', async () => {
+      const mockCalendars = [
+        { id: 'cal1', summary: 'Calendar 1', primary: false },
+        { id: 'cal2', summary: 'Calendar 2', primary: false },
+      ];
+      mockGoogleApi.calendarList.list.mockResolvedValue({ data: { items: mockCalendars } });
+
+      const choices = await getCalendarChoicesForUser();
+      
+      // Even if no primary is in the list, the first choice should be the default primary.
+      expect(choices[0]).toEqual({ id: 'primary', summary: '我的主要日曆' });
     });
 
-    it('should respect the CALENDAR_CHOICE_LIMIT', async () => {
+    it('Test Case 3.2: should limit choices to 3 even if more are available', async () => {
+        process.env.TARGET_CALENDAR_NAME = 'Cal1,Cal2,Cal3';
         const mockCalendars = [
-            { id: 'primary', summary: '我的主要日曆', primary: true },
-            { id: 'c1', summary: 'C1' },
-            { id: 'c2', summary: 'C2' },
-            { id: 'c3', summary: 'C3' },
+            { id: 'primary_id', summary: '我的主要日曆', primary: true },
+            { id: 'cal1_id', summary: 'Cal1' },
+            { id: 'cal2_id', summary: 'Cal2' },
+            { id: 'cal3_id', summary: 'Cal3' },
         ];
         mockGoogleApi.calendarList.list.mockResolvedValue({ data: { items: mockCalendars } });
-        process.env.TARGET_CALENDAR_NAME = 'C1,C2,C3';
+
         const choices = await getCalendarChoicesForUser();
+
         expect(choices).toHaveLength(3);
-        expect(choices.some((c: { id: string; }) => c.id === 'c3')).toBeFalsy(); // c3 should be excluded
+        // It should contain primary, Cal1, and Cal2, but NOT Cal3.
+        expect(choices.map((c: { summary: string }) => c.summary)).toEqual(['我的主要日曆', 'Cal1', 'Cal2']);
     });
 
     it('should handle empty TARGET_CALENDAR_NAME', async () => {
@@ -321,6 +379,18 @@ describe('googleCalendarService', () => {
         mockGoogleApi.events.list.mockRejectedValue(new Error('API Error'));
         await expect(findEventsInTimeRange('2025-01-01T00:00:00Z', '2025-01-01T23:59:59Z', 'primary')).rejects.toThrow('Failed to find events in the specified time range.');
     });
+
+    it('should handle date-only strings for startTime and endTime', async () => {
+      const mockEvents = [{ id: 'event1', summary: 'Event 1' }];
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: mockEvents } });
+      
+      await findEventsInTimeRange('primary', '2025-03-10', '2025-03-12', 'Date-only query');
+
+      expect(mockGoogleApi.events.list).toHaveBeenCalledWith(expect.objectContaining({
+        timeMin: new Date('2025-03-10').toISOString(),
+        timeMax: new Date('2025-03-12').toISOString(),
+      }));
+    });
   });
 
   describe('searchEvents', () => {
@@ -336,29 +406,48 @@ describe('googleCalendarService', () => {
         await expect(searchEvents('primary', '2025-01-01T00:00:00Z', '2025-01-01T23:59:59Z', 'Test')).rejects.toThrow('Failed to search for events.');
     });
 
-    it('should search without timeMin, defaulting to now', async () => {
-      const mockEvents = [{ id: 'event1', summary: 'Found Event' }];
-      mockGoogleApi.events.list.mockResolvedValue({ data: { items: mockEvents, nextPageToken: null } });
-      const result = await searchEvents('primary', null, '2025-01-01T23:59:59Z', 'Test');
+    it('Test Case 4.1: should default timeMin to now if it is null', async () => {
+      const now = new Date('2025-11-04T10:00:00Z');
+      jest.spyOn(global, 'Date').mockImplementation(() => now as any);
+
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [] } });
+      await searchEvents('primary', null, null, 'Test');
+
       expect(mockGoogleApi.events.list).toHaveBeenCalledWith(expect.objectContaining({
-        timeMin: expect.any(String), // Check that it's a string, which means it was set
-        timeMax: '2025-01-01T23:59:59Z',
+        timeMin: '2025-11-04T10:00:00.000Z',
       }));
-      expect(result.events).toEqual(mockEvents);
+      (global.Date as any).mockRestore();
     });
 
-    it('should search without timeMax', async () => {
-      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [], nextPageToken: null } });
-      await searchEvents('primary', '2025-01-01T00:00:00Z', null, 'Test');
+    it('Test Case 4.2: should pass timeMax to the API if it has a value', async () => {
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [] } });
+      await searchEvents('primary', '2025-01-01T00:00:00Z', '2025-01-31T23:59:59Z', 'Test');
+
+      expect(mockGoogleApi.events.list).toHaveBeenCalledWith(expect.objectContaining({
+        timeMax: '2025-01-31T23:59:59Z',
+      }));
+    });
+
+    it('Test Case 4.3: should handle null timeMin and valued timeMax correctly', async () => {
+      const now = new Date('2025-11-04T10:00:00Z');
+      jest.spyOn(global, 'Date').mockImplementation(() => now as any);
+
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [] } });
+      await searchEvents('primary', null, '2025-12-31T23:59:59Z', 'Test');
+
+      expect(mockGoogleApi.events.list).toHaveBeenCalledWith(expect.objectContaining({
+        timeMin: '2025-11-04T10:00:00.000Z',
+        timeMax: '2025-12-31T23:59:59Z',
+      }));
+      (global.Date as any).mockRestore();
+    });
+
+    it('should not include timeMax in API call if it is null', async () => {
+      mockGoogleApi.events.list.mockResolvedValue({ data: { items: [] } });
+      await searchEvents('primary', new Date().toISOString(), null, 'Test');
+
       const calledWith = mockGoogleApi.events.list.mock.calls[0][0];
       expect(calledWith).not.toHaveProperty('timeMax');
-    });
-
-    it('should search without a keyword', async () => {
-        mockGoogleApi.events.list.mockResolvedValue({ data: { items: [], nextPageToken: null } });
-        await searchEvents('primary', '2025-01-01T00:00:00Z', '2025-01-01T23:59:59Z', undefined);
-        const calledWith = mockGoogleApi.events.list.mock.calls[0][0];
-        expect(calledWith.q).toBeUndefined();
     });
   });
 

@@ -21,7 +21,7 @@ jest.mock('@google/generative-ai', () => ({
 
 describe('geminiService', () => {
   beforeEach(() => {
-    mockGeminiApi.generateContent.mockClear();
+    mockGeminiApi.generateContent.mockReset();
     jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
     jest.useFakeTimers();
@@ -53,6 +53,62 @@ describe('geminiService', () => {
       const result = await classifyIntent('any');
       expect(result).toEqual({ type: 'unknown', originalText: 'any' });
       expect(console.warn).toHaveBeenCalled();
+    });
+
+    it('Test Case 2.1: should override a timed event to all-day if text contains "全天"', async () => {
+      const mockApiResponse = {
+        type: 'create_event',
+        event: {
+          title: '全天會議',
+          start: '2025-11-25T09:00:00+08:00', // Timed event from Gemini
+          end: '2025-11-25T10:00:00+08:00',
+          allDay: false,
+        },
+      };
+      mockGeminiApi.generateContent.mockResolvedValue({ response: { text: () => JSON.stringify(mockApiResponse) } });
+
+      const result = await classifyIntent('明天全天開會');
+
+      expect(result.type).toBe('create_event');
+      if (result.type === 'create_event') {
+        expect(result.event.allDay).toBe(true);
+        expect(result.event.start).toBe('2025-11-25');
+        expect(result.event.end).toBe('2025-11-26');
+      }
+    });
+
+    it('Test Case 2.2: should override a timed event to all-day if text contains "整天"', async () => {
+      const mockApiResponse = {
+        type: 'create_event',
+        event: {
+          title: '整天 offsite',
+          start: '2025-11-25T09:00:00+08:00', // Timed event from Gemini
+        },
+      };
+      mockGeminiApi.generateContent.mockResolvedValue({ response: { text: () => JSON.stringify(mockApiResponse) } });
+
+      const result = await classifyIntent('明天整天 offsite');
+
+      expect(result.type).toBe('create_event');
+      if (result.type === 'create_event') {
+        expect(result.event.allDay).toBe(true);
+        expect(result.event.start).toBe('2025-11-25');
+        expect(result.event.end).toBe('2025-11-26');
+      }
+    });
+
+    it('Test Case 2.4: should not modify event if all-day keyword exists but start date is missing', async () => {
+      const mockApiResponse = {
+        type: 'create_event',
+        event: {
+          title: '一個沒有時間的事件',
+        },
+      };
+      mockGeminiApi.generateContent.mockResolvedValue({ response: { text: () => JSON.stringify(mockApiResponse) } });
+
+      const result = await classifyIntent('全天待命');
+
+      expect(result).toEqual(mockApiResponse); // Should return the original object without crashing
     });
   });
 
@@ -154,98 +210,109 @@ describe('geminiService', () => {
     });
   });
 
-  describe('callGeminiText with retry logic', () => {
-    it('should retry on 503 error and succeed on the second attempt', async () => {
-      const error503 = new Error('Service Unavailable');
-      (error503 as any).status = 503;
-      const mockSuccessResponse = { title: 'Success Event' };
+  describe('API Retry Logic', () => {
+    // Test wrapper functions like parseTextToCalendarEvent which call the internal callGeminiText
+    describe('callGeminiText', () => {
+      it('Test Case 1.1: should retry on 503 error and succeed on the second attempt', async () => {
+        const error503 = new Error('Service Unavailable');
+        (error503 as any).status = 503;
+        const mockSuccessResponse = { title: 'Success Event' };
 
-      mockGeminiApi.generateContent
-        .mockRejectedValueOnce(error503)
-        .mockResolvedValueOnce({ response: { text: () => JSON.stringify(mockSuccessResponse) } });
+        mockGeminiApi.generateContent
+          .mockRejectedValueOnce(error503)
+          .mockResolvedValueOnce({ response: { text: () => JSON.stringify(mockSuccessResponse) } });
 
-      const promise = parseTextToCalendarEvent('Some text');
-      await jest.runAllTimersAsync();
-      const result = await promise;
+        const promise = parseTextToCalendarEvent('Some text');
+        await jest.advanceTimersByTimeAsync(2000); // Advance past the delay
+        const result = await promise;
 
-      expect(result).toEqual(mockSuccessResponse);
-      expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(2);
+        expect(result).toEqual(mockSuccessResponse);
+        expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(2);
+        expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('retrying in 2000ms... (Attempt 1/3)'));
+      });
+
+      it('Test Case 1.2: should fail after exhausting all retries on 503 errors', async () => {
+                  const error503 = new Error('Service Unavailable');
+                  (error503 as any).status = 503;
+                  mockGeminiApi.generateContent          .mockRejectedValueOnce(error503)
+          .mockRejectedValueOnce(error503)
+          .mockRejectedValueOnce(error503);
+
+        const promise = parseTextToCalendarEvent('Some text');
+        await jest.runAllTimersAsync();
+        const result = await promise;
+
+        expect(result).toEqual({ error: 'Failed to parse event from text.' });
+        expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(3);
+        expect(console.error).toHaveBeenCalledWith('Error calling Gemini Text API:', error503);
+      });
+
+      it('Test Case 1.3: should not retry on non-503 errors', async () => {
+        const error400 = new Error('Bad Request');
+        (error400 as any).status = 400;
+
+        mockGeminiApi.generateContent.mockRejectedValueOnce(error400);
+
+        const result = await parseTextToCalendarEvent('Some text');
+
+        expect(result).toEqual({ error: 'Failed to parse event from text.' });
+        expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(1);
+        expect(console.warn).not.toHaveBeenCalled();
+        expect(console.error).toHaveBeenCalledWith('Error calling Gemini Text API:', error400);
+      });
     });
 
-    it('should fail after exhausting all retries on 503 errors', async () => {
-      const error503 = new Error('Service Unavailable');
-      (error503 as any).status = 503;
+    // Test wrapper functions like parseImageToCalendarEvents which call the internal callGeminiVision
+    describe('callGeminiVision', () => {
+        it('Test Case 1.1: should retry on 503 error and succeed on the second attempt', async () => {
+            const error503 = new Error('Service Unavailable');
+            (error503 as any).status = 503;
+            const mockSuccessResponse = { events: [{ title: 'Image Event' }] };
+    
+            mockGeminiApi.generateContent
+              .mockRejectedValueOnce(error503)
+              .mockResolvedValueOnce({ response: { text: () => JSON.stringify(mockSuccessResponse) } });
+    
+            const promise = parseImageToCalendarEvents('base64string', 'TestPerson');
+            await jest.advanceTimersByTimeAsync(2000);
+            const result = await promise;
+    
+            expect(result).toEqual(mockSuccessResponse);
+            expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(2);
+            expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('retrying in 2000ms... (Attempt 1/3)'));
+        });
 
-      // Mock to fail all attempts
-      mockGeminiApi.generateContent.mockRejectedValue(error503);
+        it('Test Case 1.2: should fail after exhausting all retries on 503 errors', async () => {
+            const error503 = new Error('Service Unavailable');
+            (error503 as any).status = 503;
+    
+            mockGeminiApi.generateContent
+              .mockRejectedValueOnce(error503)
+              .mockRejectedValueOnce(error503)
+              .mockRejectedValueOnce(error503);
+    
+            const promise = parseImageToCalendarEvents('base64string', 'TestPerson');
+            await jest.runAllTimersAsync();
+            const result = await promise;
+    
+            expect(result).toEqual({ error: 'Failed to parse event from image.' });
+            expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(3);
+            expect(console.error).toHaveBeenCalledWith('Error calling Gemini Vision API:', error503);
+        });
 
-      const promise = parseTextToCalendarEvent('Some text');
-      await jest.runAllTimersAsync();
-      const result = await promise;
-
-      expect(result).toEqual({ error: 'Failed to parse event from text.' });
-      expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(3);
-    });
-
-    it('should not retry on non-503 errors', async () => {
-      const error400 = new Error('Bad Request');
-      (error400 as any).status = 400;
-
-      mockGeminiApi.generateContent.mockRejectedValue(error400);
-
-      await expect(parseTextToCalendarEvent('Some text')).resolves.toEqual({ error: 'Failed to parse event from text.' });
-
-      expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('callGeminiVision with retry logic', () => {
-    it('should retry on 503 error and succeed on the second attempt', async () => {
-      const error503 = new Error('Service Unavailable');
-      (error503 as any).status = 503;
-      const mockSuccessResponse = { events: [{ title: 'Image Event' }] };
-
-      mockGeminiApi.generateContent
-        .mockRejectedValueOnce(error503)
-        .mockResolvedValueOnce({ response: { text: () => JSON.stringify(mockSuccessResponse) } });
-
-      const promise = parseImageToCalendarEvents('base64string', 'TestPerson');
-      // Advance timer to trigger the retry after 2000ms
-      await jest.advanceTimersByTimeAsync(2000);
-      const result = await promise;
-
-      expect(result).toEqual(mockSuccessResponse);
-      expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(2);
-    });
-
-    it('should fail after exhausting all retries on 503 errors', async () => {
-      const error503 = new Error('Service Unavailable');
-      (error503 as any).status = 503;
-
-      // Mock to fail 3 times to match MAX_RETRIES
-      mockGeminiApi.generateContent
-        .mockRejectedValueOnce(error503)
-        .mockRejectedValueOnce(error503)
-        .mockRejectedValueOnce(error503);
-
-      const promise = parseImageToCalendarEvents('base64string', 'TestPerson');
-      await jest.runAllTimersAsync();
-      const result = await promise;
-
-      expect(result).toEqual({ error: 'Failed to parse event from image.' });
-      expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(3);
-    });
-
-    it('should not retry on non-503 errors', async () => {
-      const error400 = new Error('Bad Request');
-      (error400 as any).status = 400;
-
-      mockGeminiApi.generateContent.mockRejectedValue(error400);
-      
-      const result = await parseImageToCalendarEvents('base64string', 'TestPerson');
-
-      expect(result).toEqual({ error: 'Failed to parse event from image.' });
-      expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(1);
+        it('Test Case 1.3: should not retry on non-503 errors', async () => {
+            const error400 = new Error('Bad Request');
+            (error400 as any).status = 400;
+    
+            mockGeminiApi.generateContent.mockRejectedValueOnce(error400);
+    
+            const result = await parseImageToCalendarEvents('base64string', 'TestPerson');
+    
+            expect(result).toEqual({ error: 'Failed to parse event from image.' });
+            expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(1);
+            expect(console.warn).not.toHaveBeenCalled();
+            expect(console.error).toHaveBeenCalledWith('Error calling Gemini Vision API:', error400);
+        });
     });
   });
 });
