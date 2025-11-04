@@ -10,7 +10,7 @@ export interface CalendarEvent {
   start: string; // ISO 8601 格式
   end: string;   // ISO 8601 格式
   allDay: boolean;
-  recurrence: string | null;
+  recurrence: string | string[] | null;
   reminder?: number; // 以分鐘為單位
   calendarId: string;
   location?: string; // 可選的地點
