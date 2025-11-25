@@ -94,16 +94,24 @@ describe('index.ts final coverage push', () => {
     let handleNewCommand: any;
     let handlePostbackEvent: any;
     let handleFileMessage: any;
+    let processCompleteEvent: any;
+    let handleRecurrenceResponse: any;
     const userId = 'testUser';
     const replyToken = 'test-reply-token';
     const chatId = 'testUser'; // In 1-on-1 chat, chatId is the same as userId
 
     beforeEach(() => {
+        // Reset modules to clear any state or mock pollution from previous tests
+        jest.resetModules();
+
+        // Re-import all mocks and the module under test
         const indexModule = require('./index');
         handleTextMessage = indexModule.handleTextMessage;
         handleNewCommand = indexModule.handleNewCommand;
         handlePostbackEvent = indexModule.handlePostbackEvent;
         handleFileMessage = indexModule.handleFileMessage;
+        processCompleteEvent = indexModule.processCompleteEvent;
+        handleRecurrenceResponse = indexModule.handleRecurrenceResponse;
 
         // Reset mocks to a default working state before each test
         mockRedisGet.mockResolvedValue(undefined);
@@ -458,29 +466,17 @@ describe('index.ts final coverage push', () => {
     });
 
     it('should handle generic error in processCompleteEvent', async () => {
-        jest.doMock('./services/googleCalendarService', () => ({
-            ...jest.requireActual('./services/googleCalendarService'),
-            getCalendarChoicesForUser: jest.fn().mockRejectedValue(new Error()),
-        }));
-        const { processCompleteEvent } = require('./index');
-        await processCompleteEvent(replyToken, {}, userId, chatId);
-        expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, expect.objectContaining({
-            type: 'flex',
-            altText: '活動已新增：undefined',
-            contents: expect.objectContaining({
-                type: 'bubble',
-                header: expect.objectContaining({
-                    contents: expect.arrayContaining([
-                        expect.objectContaining({ text: '✅ 已新增至「Primary」' })
-                    ])
-                }),
-                body: expect.objectContaining({
-                    contents: expect.arrayContaining([
-                        expect.objectContaining({ text: '無標題' })
-                    ])
-                })
-            })
-        }));
+        // Use mockImplementationOnce as an alternative way to reject a promise
+        mockGetCalendarChoicesForUser.mockImplementationOnce(() => Promise.reject(new Error('GCal choices failed')));
+
+        // The function under test is now loaded in beforeEach
+        await processCompleteEvent(replyToken, { title: 'event' }, userId, chatId);
+
+        // According to handleCreateError, a generic error should trigger a pushMessage
+        expect(mockPushMessage).toHaveBeenCalledWith(userId, {
+            type: 'text',
+            text: '抱歉，新增日曆事件時發生錯誤。'
+        });
     });
 
     it('should handle generic error in handleRecurrenceResponse', async () => {
@@ -489,7 +485,6 @@ describe('index.ts final coverage push', () => {
         // Correctly mock the dependency to throw an error
         mockParseRecurrenceEndCondition.mockRejectedValue(new Error('Gemini Error'));
 
-        const { handleRecurrenceResponse } = require('./index');
         await handleRecurrenceResponse(replyToken, {text: 'some response'} as TextEventMessage, userId, state);
         expect(mockPushMessage).toHaveBeenCalledWith(userId, { type: 'text', text: '抱歉，處理重複性活動時發生錯誤。' });
     });
@@ -528,7 +523,10 @@ describe('index.ts final coverage push', () => {
         mockRedisGet.mockResolvedValue(JSON.stringify(state));
         mockGetMessageContent.mockResolvedValue(createMockStream('csv content'));
         mockParseCsvToEvents.mockReturnValue([{title: 'test event', start: '2025-01-01T10:00:00+08:00', end: '2025-01-01T11:00:00+08:00'}]);
-        mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
+        mockGetCalendarChoicesForUser.mockResolvedValue([
+            { id: 'primary', summary: 'Primary Cal' },
+            { id: 'secondary', summary: 'Secondary Cal' },
+        ]);
         const message = { id: '1', fileName: 'a.csv' } as FileEventMessage;
         const mockEvent = createMockEvent(userId, message, 'file');
         await handleFileMessage(replyToken, message, userId, mockEvent);
@@ -538,11 +536,15 @@ describe('index.ts final coverage push', () => {
             }),
             expect.objectContaining({
                 template: expect.objectContaining({
-                    text: '您要將這 1 個活動一次全部新增至您的 Google 日曆嗎？',
+                    text: expect.stringContaining('偵測到您有多個日曆'),
                     actions: expect.arrayContaining([
                         expect.objectContaining({
-                            label: '全部新增',
+                            label: 'Primary Cal',
                             data: 'action=createAllShifts&calendarId=primary',
+                        }),
+                        expect.objectContaining({
+                            label: 'Secondary Cal',
+                            data: 'action=createAllShifts&calendarId=secondary',
                         }),
                     ]),
                 }),

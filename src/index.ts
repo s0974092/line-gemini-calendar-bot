@@ -310,23 +310,18 @@ const handleFileMessage = async (replyToken: string, message: FileEventMessage, 
     const fileBuffer = await streamToBuffer(fileContentStream);
     let events: CalendarEvent[];
 
-    if (isCsv) {
-      try {
+    try {
+      if (isCsv) {
         const fileContent = fileBuffer.toString('utf8');
         events = parseCsvToEvents(fileContent, personName);
-      } catch (csvError) {
-        console.error('Error parsing CSV:', csvError);
-        await clearConversationState(userId, chatId);
-        return lineClient.replyMessage(replyToken, { type: 'text', text: '處理您上傳的 CSV 檔案時發生錯誤，請檢查並確認檔案是否正確。' });
-      }
-    } else { // isXlsx
-      try {
+      } else { // isXlsx
         events = parseXlsxToEvents(fileBuffer, personName);
-      } catch (xlsxError) {
-        console.error('Error parsing XLSX:', xlsxError);
-        await clearConversationState(userId, chatId); // <-- Use composite key
-        return lineClient.replyMessage(replyToken, { type: 'text', text: '處理您上傳的 XLSX 檔案時發生錯誤，請檢查並確認檔案是否正確。' });
       }
+    } catch (parseError) {
+        console.error(`Error parsing ${isCsv ? 'CSV' : 'XLSX'}:`, parseError);
+        await clearConversationState(userId, chatId);
+        const fileType = isCsv ? 'CSV' : 'XLSX';
+        return lineClient.replyMessage(replyToken, { type: 'text', text: `處理您上傳的 ${fileType} 檔案時發生錯誤，請檢查並確認檔案是否正確。` });
     }
 
     // 清除舊的 'awaiting_csv_upload' 狀態
