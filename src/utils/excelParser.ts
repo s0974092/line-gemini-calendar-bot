@@ -151,8 +151,8 @@ const isLongFormat = (data: (string | number)[][]): boolean => {
     }
     const headers = data[0].map(h => String(h).trim());
     
-    const hasName = headers.some(h => ['姓名', '名字', '員工'].includes(h));
-    const hasDate = headers.some(h => ['日期'].includes(h));
+    const hasName = headers.some(h => ['姓名', '名字', '員工'].includes(h)) || headers.some(h => ['姓名', '名字', '員工'].some(alias => h.includes(alias)));
+    const hasDate = headers.some(h => ['日期'].includes(h)) || headers.some(h => ['日期'].some(alias => h.includes(alias)));
     return hasName && hasDate;
 };
 
@@ -171,7 +171,7 @@ const isVerticalFormat = (data: (string | number)[][]): boolean => {
     const hasShiftType = headers.some(h => ['班別', '班次'].includes(h));
 
     const firstRow = data[0];
-    const isTitleRow = firstRow.length > 0 && (firstRow[1] === '' || firstRow[1] === undefined) && (firstRow[2] === '' || firstRow[2] === undefined);
+    const isTitleRow = firstRow.length > 0 && firstRow[1] === '' && firstRow[2] === '';
 
     return isTitleRow && hasDate && hasShiftType;
 };

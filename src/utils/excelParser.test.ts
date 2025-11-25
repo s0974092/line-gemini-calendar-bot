@@ -32,6 +32,10 @@ describe('excelParser', () => {
         expect(normalizeTimeFormat('invalid-time')).toBeNull();
     });
 
+    it('should return null for invalid format with non-numeric parts', () => {
+        expect(normalizeTimeFormat('abc-123')).toBeNull();
+    });
+
     it('should correctly pad single-digit hours', () => {
         expect(normalizeTimeFormat('8-12')).toBe('08:00-12:00');
     });
@@ -198,6 +202,75 @@ ${personName},晚班,早班,假,1430-22`;
         const events = parseXlsxToEvents(buffer, personName);
         
         expect(events).toHaveLength(0);
+    });
+
+    it('should parse long format with partial match headers', () => {
+        const personName = '承君';
+        const csvContent = `員工姓名,日期,時段\n${personName},11/26,09:00-17:00`;
+        const events = parseCsvToEvents(csvContent, personName);
+        expect(events).toHaveLength(1);
+        expect(events[0].title).toBe('承君 早班');
+    });
+
+    it('should handle empty rows in long format', () => {
+        const personName = '承君';
+        const csvContent = `姓名,日期,時段\n${personName},11/26,09:00-17:00\n\n${personName},11/27,14:00-22:00`;
+        const events = parseCsvToEvents(csvContent, personName);
+        expect(events).toHaveLength(2);
+        expect(events[0].start).toContain('-11-26T09:00:00');
+        expect(events[1].start).toContain('-11-27T14:00:00');
+    });
+
+    it('should parse long format with alternative headers', () => {
+        const personName = '承君';
+        const csvContent = `員工,日期,時段\n${personName},11/26,09:00-17:00`;
+        const events = parseCsvToEvents(csvContent, personName);
+        expect(events).toHaveLength(1);
+        expect(events[0].title).toBe('承君 早班');
+        expect(events[0].start).toContain('-11-26T09:00:00');
+    });
+
+    it('should handle year-crossing dates correctly', () => {
+        const personName = '承君';
+        const currentYear = 2024;
+        const realDate = Date;
+        
+        // Mock Date to control the current year for the test
+        jest.spyOn(global, 'Date').mockImplementation((...args) => {
+            if (args.length > 0) {
+                // @ts-ignore
+                return new realDate(...args);
+            }
+            return new realDate(currentYear, 11, 15); // Dec 15, 2024
+        });
+
+        const csvContent = `日期,12/30,1/1,1/2\n${personName},早班,晚班,早班`;
+        const events = parseCsvToEvents(csvContent, personName);
+        
+        expect(events).toHaveLength(3);
+        expect(events[0].start).toContain(`${currentYear}-12-30`);
+        expect(events[1].start).toContain(`${currentYear + 1}-01-01`);
+        expect(events[2].start).toContain(`${currentYear + 1}-01-02`);
+
+        // Restore original Date object
+        jest.restoreAllMocks();
+    });
+
+    it('should handle name being in the first row for wide format', () => {
+        const personName = '承君';
+        const csvContent = `${personName},晚班,早班,早班`;
+        const events = parseCsvToEvents(csvContent, personName);
+        expect(events).toHaveLength(0);
+    });
+
+    it('should skip malformed dates in wide format', () => {
+        const personName = '承君';
+        const csvContent = `日期,10/1,10/abc,10/3
+${personName},早班,晚班,早班`;
+        const events = parseCsvToEvents(csvContent, personName);
+        expect(events).toHaveLength(2);
+        expect(events[0].start).toContain('-10-01T09:00:00');
+        expect(events[1].start).toContain('-10-03T09:00:00');
     });
 
     it('should return an empty array for an unrecognized format', () => {
