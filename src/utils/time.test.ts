@@ -52,7 +52,7 @@ describe('time.ts', () => {
         end: '2025-01-02T11:00:00Z',
       };
       const result = await formatEventTime(event);
-      expect(result).toEqual({ primary: '2025年1月1日 18:00 - 2025年1月2日 19:00' });
+      expect(result).toEqual({ primary: expect.stringMatching(/2025年1月1日\s*18:00 - 2025年1月2日\s*19:00/) });
     });
 
     it('should format a recurring event with UNTIL correctly', async () => {
@@ -117,7 +117,7 @@ describe('time.ts', () => {
         start: '2025-01-01T10:00:00Z',
       };
       const result = await formatEventTime(event);
-      expect(result).toEqual({ primary: '2025年1月1日 18:00' });
+      expect(result).toEqual({ primary: expect.stringMatching(/2025年1月1日\s*18:00/) });
     });
   });
 

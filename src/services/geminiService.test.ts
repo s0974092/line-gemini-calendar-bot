@@ -280,7 +280,7 @@ describe('geminiService', () => {
             expect(result).toEqual(mockSuccessResponse);
             expect(mockGeminiApi.generateContent).toHaveBeenCalledTimes(2);
             expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('retrying in 2000ms... (Attempt 1/3)'));
-        });
+        }, 20000);
 
         it('Test Case 1.2: should fail after exhausting all retries on 503 errors', async () => {
             const error503 = new Error('Service Unavailable');

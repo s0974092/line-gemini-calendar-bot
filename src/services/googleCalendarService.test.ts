@@ -138,6 +138,7 @@ describe('googleCalendarService', () => {
     it('should throw an error if the insert API call fails', async () => {
         mockGoogleApi.events.list.mockResolvedValue({ data: { items: [] } });
         mockGoogleApi.events.insert.mockRejectedValue(new Error('API Error'));
+
         await expect(createCalendarEvent(event, 'primary')).rejects.toThrow('Failed to create Google Calendar event.');
     });
 
@@ -371,13 +372,13 @@ describe('googleCalendarService', () => {
     it('should return events within the specified time range', async () => {
       const mockEvents = [{ id: 'event1', summary: 'Event 1' }];
       mockGoogleApi.events.list.mockResolvedValue({ data: { items: mockEvents } });
-      const result = await findEventsInTimeRange('2025-01-01T00:00:00Z', '2025-01-01T23:59:59Z', 'primary');
+      const result = await findEventsInTimeRange('primary', '2025-01-01T00:00:00Z', '2025-01-01T23:59:59Z', 'Test');
       expect(result).toEqual(mockEvents);
     });
 
     it('should throw an error if the API call fails', async () => {
         mockGoogleApi.events.list.mockRejectedValue(new Error('API Error'));
-        await expect(findEventsInTimeRange('2025-01-01T00:00:00Z', '2025-01-01T23:59:59Z', 'primary')).rejects.toThrow('Failed to find events in the specified time range.');
+        await expect(findEventsInTimeRange('primary', '2025-01-01T00:00:00Z', '2025-01-01T23:59:59Z', 'Test')).rejects.toThrow('Failed to find events in the specified time range.');
     });
 
     it('should handle date-only strings for startTime and endTime', async () => {

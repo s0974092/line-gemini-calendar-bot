@@ -1,4 +1,4 @@
-import { FileEventMessage, PostbackEvent } from '@line/bot-sdk';
+import { Client, FileEventMessage, PostbackEvent, WebhookEvent } from '@line/bot-sdk';
 import { CalendarEvent } from './services/geminiService';
 
 // Mock external dependencies
@@ -77,40 +77,67 @@ jest.mock('ioredis', () => {
   }));
 });
 
+// --- Isolated Test for Redis Error Handling ---
+// This test needs to be isolated because it depends on mocking the behavior
+// of a module-level constant (`redis`) *before* the module is loaded.
+describe('Redis Connection Error', () => {
+    afterEach(() => {
+        // Clean up spies and modules
+        jest.restoreAllMocks();
+        jest.resetModules();
+    });
 
-describe('index.ts unit tests', () => {
-  beforeEach(() => {
-    jest.resetModules();
-    jest.clearAllMocks();
-  });
-
-  afterEach(async () => {
-    const { redis, server } = require('./index');
-    if (server && server.listening) {
-      await new Promise(resolve => server.close(resolve));
-    }
-    await redis.quit();
-  });
-
-  describe('Redis Error Handling', () => {
     it('should log an error when redis connection fails', () => {
+      // 1. Set up the spy BEFORE the module is loaded
       const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      
+      // 2. Configure the mock to simulate the 'error' event
       mockRedisOn.mockImplementation((event, callback) => {
         if (event === 'error') {
           callback(new Error('Redis connection failed'));
         }
       });
+      
+      // 3. Reset modules to ensure we get a fresh import of index.ts
+      jest.resetModules();
       require('./index');
-      expect(mockRedisOn).toHaveBeenCalledWith('error', expect.any(Function));
+      
+      // 4. Assert that the error was logged
       expect(consoleErrorSpy).toHaveBeenCalledWith('Redis Error:', expect.any(Error));
-      consoleErrorSpy.mockRestore();
     });
+});
+
+
+describe('index.ts unit tests', () => {
+  let handleNewCommand: any;
+  let handleTextMessage: any;
+
+  beforeEach(() => {
+    jest.resetModules();
+    jest.clearAllMocks();
+
+    const indexModule = require('./index');
+    handleNewCommand = indexModule.handleNewCommand;
+    handleTextMessage = indexModule.handleTextMessage;
+  });
+
+  afterEach(async () => {
+    const indexModule = require.cache[require.resolve('./index')];
+    if (indexModule && indexModule.exports) {
+      const { redis, server } = indexModule.exports;
+      if (server && server.listening) {
+        await new Promise(resolve => server.close(resolve));
+      }
+      if (redis) {
+        await redis.quit();
+      }
+    }
   });
 
   describe('Ambiguous Intent Handling', () => {
-    let handleNewCommand: any;
     const replyToken = 'test-reply-token';
     const userId = 'test-user';
+    const chatId = 'test-chat'; // Add chatId for context
 
     beforeEach(() => {
         jest.resetModules();
@@ -137,7 +164,7 @@ describe('index.ts unit tests', () => {
       mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
       mockSearchEvents.mockResolvedValue({ events: multipleEvents });
 
-      await handleNewCommand(replyToken, message, userId);
+      await handleNewCommand(replyToken, message, userId, chatId);
 
       expect(mockSearchEvents).toHaveBeenCalled();
       const [sentReplyToken, sentMessages] = mockReplyMessage.mock.calls[0];
@@ -166,7 +193,7 @@ describe('index.ts unit tests', () => {
       mockGetCalendarChoicesForUser.mockResolvedValue([{ id: 'primary', summary: 'Primary' }]);
       mockSearchEvents.mockResolvedValue({ events: multipleEvents });
 
-      await handleNewCommand(replyToken, message, userId);
+      await handleNewCommand(replyToken, message, userId, chatId);
 
       expect(mockSearchEvents).toHaveBeenCalled();
       expect(mockReplyMessage).toHaveBeenCalledWith(replyToken, {
@@ -177,7 +204,6 @@ describe('index.ts unit tests', () => {
   });
 
   describe('Multi-turn Conversation Scenarios', () => {
-    let handleTextMessage: any;
   
     beforeEach(() => {
       jest.resetModules();
@@ -188,12 +214,13 @@ describe('index.ts unit tests', () => {
   
     it('should handle multi-turn event creation: time first, then title', async () => {
       const userId = 'multi-turn-user';
+      const chatId = 'chat-multi-turn-1';
       const partialEvent = {
         title: null,
         start: '2025-09-10T15:00:00+08:00',
         end: '2025-09-10T16:00:00+08:00',
       };
-      const mockEvent = { source: { type: 'user', userId } } as any;
+      const mockEvent = { source: { type: 'user', userId }, ...({ type: 'message', message: { type: 'text', text: ''}} as any) } as WebhookEvent;
   
       // --- Turn 1: User sends time only ---
       const replyToken1 = 'reply-token-1';
@@ -201,14 +228,14 @@ describe('index.ts unit tests', () => {
       mockClassifyIntent.mockResolvedValue({ type: 'create_event', event: partialEvent });
       mockRedisGet.mockResolvedValue(undefined); // No initial state
   
-      await handleTextMessage(replyToken1, firstMessage, userId, mockEvent);
+      await handleTextMessage(replyToken1, firstMessage, userId, { ...mockEvent, source: { userId, type: 'group', groupId: chatId } });
   
       // Assertions for Turn 1
       expect(mockReplyMessage).toHaveBeenCalledWith(replyToken1, {
         type: 'text',
         text: expect.stringContaining('要安排什麼活動呢？'),
       });
-      const compositeKey = `state:${userId}:${userId}`;
+      const compositeKey = `state:${userId}:${chatId}`;
       expect(mockRedisSet).toHaveBeenCalledWith(compositeKey, expect.any(String), 'EX', 3600);
       const stateSet = JSON.parse(mockRedisSet.mock.calls[0][1]);
       expect(stateSet.step).toBe('awaiting_event_title');
@@ -223,12 +250,11 @@ describe('index.ts unit tests', () => {
       mockCreateCalendarEvent.mockResolvedValue(createdEvent);
       mockCalendarEventsList.mockResolvedValue({ data: { items: [createdEvent] } });
   
-      await handleTextMessage(replyToken2, secondMessage, userId, mockEvent);
+      await handleTextMessage(replyToken2, secondMessage, userId, { ...mockEvent, source: { userId, type: 'group', groupId: chatId } });
   
       // Assertions for Turn 2
       expect(mockCreateCalendarEvent).toHaveBeenCalledWith(expect.objectContaining({ title: '跟客戶開會' }), 'primary');
       expect(mockRedisDel).toHaveBeenCalledWith(compositeKey);
-      // 驗證最終的確認訊息是透過 replyMessage 發送
       expect(mockReplyMessage).toHaveBeenCalledWith(replyToken2, expect.objectContaining({
         type: 'flex',
         altText: '活動已新增：跟客戶開會',
@@ -238,19 +264,19 @@ describe('index.ts unit tests', () => {
           body: expect.any(Object),
         })
       }));
-      // 確保沒有呼叫 pushMessage
       expect(mockPushMessage).not.toHaveBeenCalled();
     });
 
     it('should handle multi-turn: recurring event first, then end condition', async () => {
         const userId = 'multi-turn-user';
+        const chatId = 'chat-multi-turn-2';
         const initialEvent = {
             title: '每週站會',
             start: '2025-09-15T09:00:00+08:00',
             end: '2025-09-15T09:30:00+08:00',
             recurrence: 'RRULE:FREQ=WEEKLY;BYDAY=MO',
         };
-        const mockEvent = { source: { type: 'user', userId } } as any;
+        const mockEvent = { source: { type: 'user', userId }, ...({ type: 'message', message: { type: 'text', text: ''}} as any) } as WebhookEvent;
 
         // --- Turn 1: User sends recurring event info ---
         const replyToken1 = 'reply-token-recur-1';
@@ -258,14 +284,14 @@ describe('index.ts unit tests', () => {
         mockClassifyIntent.mockResolvedValue({ type: 'create_event', event: initialEvent });
         mockRedisGet.mockResolvedValue(undefined);
 
-        await handleTextMessage(replyToken1, firstMessage, userId, mockEvent);
+        await handleTextMessage(replyToken1, firstMessage, userId, { ...mockEvent, source: { userId, type: 'group', groupId: chatId } });
 
         // Assertions for Turn 1
         expect(mockReplyMessage).toHaveBeenCalledWith(replyToken1, {
             type: 'text',
             text: expect.stringContaining('請問您希望它什麼時候結束？'),
         });
-        const compositeKey = `state:${userId}:${userId}`;
+        const compositeKey = `state:${userId}:${chatId}`;
         expect(mockRedisSet).toHaveBeenCalledWith(compositeKey, expect.any(String), 'EX', 3600);
         const stateSet = JSON.parse(mockRedisSet.mock.calls[0][1]);
         expect(stateSet.step).toBe('awaiting_recurrence_end_condition');
@@ -285,7 +311,7 @@ describe('index.ts unit tests', () => {
         mockCreateCalendarEvent.mockResolvedValue(createdEvent);
         mockCalendarEventsList.mockResolvedValue({ data: { items: [] } });
 
-        await handleTextMessage(replyToken2, secondMessage, userId, mockEvent);
+        await handleTextMessage(replyToken2, secondMessage, userId, { ...mockEvent, source: { userId, type: 'group', groupId: chatId } });
 
         // Assertions for Turn 2
         expect(mockParseRecurrenceEndCondition).toHaveBeenCalledWith('重複十次', initialEvent.recurrence, initialEvent.start);

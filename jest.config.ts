@@ -12,6 +12,8 @@ const config: JestConfigWithTsJest = {
     '!src/**/*.test.ts', // 排除測試檔案本身
   ],
   coverageReporters: ['text', 'lcov', 'html'], // 輸出格式：文字、lcov (用於 CI/CD 工具)、HTML
+  clearMocks: true,
+  resetModules: true,
 };
 
 export = config;

@@ -625,7 +625,7 @@ const handleNewCommand = async (replyToken: string, message: TextEventMessage, u
         step: 'awaiting_csv_upload',
         personName: intent.personName,
         timestamp: Date.now()
-      });
+      }, chatId);
       return lineClient.replyMessage(replyToken, {
         type: 'text',
         text: `好的，請現在傳送您要為「${intent.personName}」分析的班表 CSV 或 XLSX 檔案。`
