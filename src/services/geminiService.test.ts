@@ -5,6 +5,7 @@ import {
   parseRecurrenceEndCondition,
   translateRruleToHumanReadable,
   parseEventChanges,
+  getRecurrenceEndDate,
 } from './geminiService';
 
 const mockGeminiApi = {
@@ -207,6 +208,28 @@ describe('geminiService', () => {
       mockGeminiApi.generateContent.mockRejectedValue(new Error('API Error'));
       const result = await parseEventChanges('any');
       expect(result).toEqual({ error: 'Failed to parse event changes from text.' });
+    });
+  });
+
+  describe('getRecurrenceEndDate', () => {
+    it('should calculate end date from RRULE with COUNT', async () => {
+      const mockResponse = { endDate: '2025-11-14' };
+      mockGeminiApi.generateContent.mockResolvedValue({ response: { text: () => JSON.stringify(mockResponse) } });
+      const result = await getRecurrenceEndDate('RRULE:FREQ=DAILY;COUNT=3', '2025-11-12T10:00:00+08:00');
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should return null endDate for infinite recurrence', async () => {
+      const mockResponse = { endDate: null };
+      mockGeminiApi.generateContent.mockResolvedValue({ response: { text: () => JSON.stringify(mockResponse) } });
+      const result = await getRecurrenceEndDate('RRULE:FREQ=WEEKLY;BYDAY=MO', '2025-11-12T10:00:00+08:00');
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should handle API errors gracefully', async () => {
+      mockGeminiApi.generateContent.mockRejectedValue(new Error('API Error'));
+      const result = await getRecurrenceEndDate('any', 'any');
+      expect(result).toEqual({ error: 'Failed to calculate recurrence end date.' });
     });
   });
 

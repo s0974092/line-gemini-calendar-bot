@@ -105,6 +105,12 @@ describe('index.ts functional tests', () => {
       expect(mockPushMessage).toHaveBeenCalledWith('test-group', expect.any(Object));
     });
 
+    it('should handle join event in a room', async () => {
+      const event = { type: 'join', source: { type: 'room', roomId: 'test-room-123' } } as WebhookEvent;
+      await index.handleEvent(event);
+      expect(mockPushMessage).toHaveBeenCalledWith('test-room-123', expect.any(Object));
+    });
+
     it('should handle unhandled event types', async () => {
       const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
       const event = { type: 'unfollow', source: { userId } } as WebhookEvent;
@@ -117,6 +123,26 @@ describe('index.ts functional tests', () => {
         const event = { type: 'message', source: { type: 'group', groupId: 'g1' } } as any;
         const result = await index.handleEvent(event);
         expect(result).toBeNull();
+    });
+
+    it('should correctly get chatId from room source type', async () => {
+      // Use a text message event with room source to verify getChatId handles room correctly
+      process.env.USER_WHITELIST = 'testUser,roomUser';
+      jest.resetModules();
+      index = require('./index');
+      
+      mockClassifyIntent.mockResolvedValue({ type: 'unknown', originalText: '' });
+      const message = { type: 'text', text: 'hello' } as TextEventMessage;
+      const event = {
+        type: 'message',
+        message,
+        replyToken,
+        source: { type: 'room', roomId: 'room-abc', userId: 'roomUser' }
+      } as WebhookEvent;
+      
+      await index.handleEvent(event);
+      // Verify it processed without error - if getChatId didn't handle room type, it would fail
+      expect(mockClassifyIntent).toHaveBeenCalled();
     });
   });
 

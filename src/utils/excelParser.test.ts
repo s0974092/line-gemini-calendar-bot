@@ -288,5 +288,267 @@ ${personName},早班,晚班,早班`;
         
         expect(events).toHaveLength(0);
     });
+
+    it('should handle Excel numeric dates in wide format', () => {
+        // Excel stores dates as numbers (days since 1900-01-01)
+        // 45566 corresponds to approximately 2024-10-01
+        const personName = '承君';
+        const sheetData = [
+            ['日期', 45566, 45567], // Numeric Excel dates
+            [personName, '早班', '晚班'],
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(2);
+        expect(events[0].title).toBe('承君 早班');
+        expect(events[1].title).toBe('承君 晚班');
+    });
+
+    it('should handle Excel numeric dates in long format', () => {
+        const personName = '承君';
+        const sheetData = [
+            ['姓名', '日期', '時間'],
+            [personName, 45566, '09:00-17:00'], // Numeric Excel date
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].title).toBe('承君 早班');
+    });
+
+    it('should handle Excel numeric dates in vertical format', () => {
+        const personName = '承君';
+        const sheetData = [
+            [personName, '', ''],
+            ['日期', '班別', '時間'],
+            [45566, '早班', '09:00-17:00'], // Numeric Excel date
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].title).toBe('承君 早班');
+    });
+
+    it('should return empty for long format missing name header', () => {
+        const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const personName = '承君';
+        const sheetData = [
+            ['日期', '時間'], // Missing 姓名/名字/員工 header
+            ['11/26', '09:00-17:00'],
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(0);
+        consoleSpy.mockRestore();
+    });
+
+    it('should skip rows with NaN dates in long format', () => {
+        const personName = '承君';
+        const sheetData = [
+            ['姓名', '日期', '時間'],
+            [personName, 'not-a-date', '09:00-17:00'], // Invalid date
+            [personName, '11/26', '09:00-17:00'], // Valid
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].start).toContain('-11-26T09:00:00');
+    });
+
+    it('should handle long format with year/month/day date', () => {
+        const personName = '承君';
+        const sheetData = [
+            ['姓名', '日期', '時間'],
+            [personName, '2025/11/26', '09:00-17:00'],
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].start).toContain('2025-11-26T09:00:00');
+    });
+
+    it('should skip rows with no time or shift type in long format', () => {
+        const personName = '承君';
+        const sheetData = [
+            ['姓名', '日期', '時間', '班別'],
+            [personName, '11/26', '', ''], // No time or shift type
+            [personName, '11/27', '09:00-17:00', '早班'], // Valid
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].start).toContain('-11-27T09:00:00');
+    });
+
+    it('should skip unknown shift types without time in long format', () => {
+        const personName = '承君';
+        const sheetData = [
+            ['姓名', '日期', '班別'],
+            [personName, '11/26', '未知班別'], // Unknown shift type
+            [personName, '11/27', '早班'], // Valid shift type
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].start).toContain('-11-27T09:00:00');
+    });
+
+    it('should return empty for vertical format missing date header', () => {
+        const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const personName = '承君';
+        const sheetData = [
+            [personName, '', ''],
+            ['班別', '時間'], // Missing '日期' header
+            ['早班', '09:00-17:00'],
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(0);
+        consoleSpy.mockRestore();
+    });
+
+    it('should skip rows with no date in vertical format', () => {
+        const personName = '承君';
+        const sheetData = [
+            [personName, '', ''],
+            ['日期', '班別', '時間'],
+            ['', '早班', '09:00-17:00'], // No date
+            ['11/27', '早班', '09:00-17:00'], // Valid
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].start).toContain('-11-27T09:00:00');
+    });
+
+    it('should skip rows with NaN dates in vertical format', () => {
+        const personName = '承君';
+        const sheetData = [
+            [personName, '', ''],
+            ['日期', '班別', '時間'],
+            ['invalid', '早班', '09:00-17:00'], // NaN date
+            ['11/27', '早班', '09:00-17:00'], // Valid
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].start).toContain('-11-27T09:00:00');
+    });
+
+    it('should skip unknown shift types without time in vertical format', () => {
+        const personName = '承君';
+        const sheetData = [
+            [personName, '', ''],
+            ['日期', '班別'],
+            ['11/26', '未知班別'], // Unknown shift type, no time
+            ['11/27', '早班'], // Valid
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].start).toContain('-11-27T09:00:00');
+    });
+
+    it('should handle vertical format with year/month/day date', () => {
+        const personName = '承君';
+        const sheetData = [
+            [personName, '', ''],
+            ['日期', '班別', '時間'],
+            ['2025/11/26', '早班', '09:00-17:00'],
+        ];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].start).toContain('2025-11-26T09:00:00');
+    });
+
+    it('should detect CSV as vertical format and parse correctly', () => {
+        const personName = '承君';
+        const csvContent = `${personName},,\n日期,班別,時間\n11/26,早班,09:00-17:00`;
+        const events = parseCsvToEvents(csvContent, personName);
+        
+        expect(events).toHaveLength(1);
+        expect(events[0].start).toContain('-11-26T09:00:00');
+        expect(events[0].title).toBe('承君 早班');
+    });
+
+    it('should return empty for isLongFormat with null/undefined data', () => {
+        // This tests the early return in isLongFormat
+        const personName = '承君';
+        const sheetData: any[] = [];
+        const workbook = XLSX.utils.book_new();
+        const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const events = parseXlsxToEvents(buffer, personName);
+        
+        expect(events).toHaveLength(0);
+    });
   });
 });
